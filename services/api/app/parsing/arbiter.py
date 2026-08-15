@@ -161,7 +161,7 @@ class Arbiter:
         if doi:
             record = hydrated.get(doi)
             if record is None and self.providers.crossref is not None:
-                record = await self._first(self.providers.crossref, doi, errors, "crossref")
+                record = await self._resolve_doi(self.providers.crossref, doi, errors)
             if record is not None:
                 breakdown = score_agreement(provisional, record.csl)
                 if breakdown.accepted(self.accept_threshold):
@@ -243,13 +243,25 @@ class Arbiter:
             provider_errors=errors,
         )
 
-    async def _first(
-        self, provider: Provider, query: str, errors: list[str], label: str
+    async def _resolve_doi(
+        self, provider: Provider, doi: str, errors: list[str]
     ) -> SourceRecord | None:
+        """Look a DOI up on the Crossref adapter.
+
+        Appendix A's `Provider` protocol has no DOI method, so the protocol-legal route
+        is `search_works(doi)`. B2's Crossref adapter also exposes `resolve_doi(doi)`,
+        which hits `/works/{doi}` directly — an exact lookup rather than a search, and
+        the path ADR-001 actually names. We prefer it when it is there and fall back to
+        the protocol otherwise, so this stays runnable against any conforming provider
+        (the test stubs implement only the protocol).
+        """
+        resolve = getattr(provider, "resolve_doi", None)
         try:
-            records = await provider.search_works(query, limit=1)
+            if callable(resolve):
+                return await resolve(doi)
+            records = await provider.search_works(doi, limit=1)
         except Exception as exc:  # noqa: BLE001 - recorded on the result, never swallowed
-            errors.append(f"{label} lookup failed: {exc!r}")
+            errors.append(f"crossref lookup failed: {exc!r}")
             return None
         return records[0] if records else None
 

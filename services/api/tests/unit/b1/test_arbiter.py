@@ -305,6 +305,39 @@ async def test_no_reference_is_ever_dropped() -> None:
     assert [r.ref_id for r in updated] == ["b0", "b1", "b2"]
 
 
+async def test_resolve_doi_is_preferred_when_the_adapter_offers_it() -> None:
+    """B2's Crossref adapter exposes `resolve_doi(doi)` — an exact /works/{doi} lookup,
+    which is the path ADR-001 names. We use it when present without requiring it."""
+
+    class CrossrefWithResolveDoi(StubProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resolved: list[str] = []
+
+        async def resolve_doi(self, doi: str) -> SourceRecord | None:
+            self.resolved.append(doi)
+            return _record("cr:10.1/x", {**VASWANI, "DOI": "10.1/x"})
+
+    crossref = CrossrefWithResolveDoi()
+    arbiter = Arbiter(ArbiterProviders(crossref=crossref), accept_threshold=ACCEPT)
+    updated, outcomes = await arbiter.reconcile([_reference(csl={**VASWANI, "DOI": "10.1/x"})])
+
+    assert crossref.resolved == ["10.1/x"]
+    assert crossref.search_calls == [], "search_works is the fallback, not the first choice"
+    assert outcomes[0].path == "crossref_doi"
+    assert updated[0].source_id == "cr:10.1/x"
+
+
+async def test_a_protocol_only_provider_still_works() -> None:
+    """The stubs implement Appendix A and nothing more; arbitration must not require
+    anything beyond it."""
+    crossref = StubProvider(search_results=[_record("cr:x", {**VASWANI, "DOI": "10.1/x"})])
+    arbiter = Arbiter(ArbiterProviders(crossref=crossref), accept_threshold=ACCEPT)
+    _, outcomes = await arbiter.reconcile([_reference(csl={**VASWANI, "DOI": "10.1/x"})])
+    assert crossref.search_calls == ["10.1/x"]
+    assert outcomes[0].accepted
+
+
 async def test_the_arbiter_never_constructs_a_source_record() -> None:
     """HR-1, structurally: every source_id the arbiter reports came from a provider."""
     record = _record("s2:abc", VASWANI, provider="semantic_scholar")

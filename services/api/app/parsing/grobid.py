@@ -48,16 +48,23 @@ class GrobidOptions:
     segment_sentences: bool = True
     coordinates: tuple[str, ...] = field(default=TEI_COORDINATE_ELEMENTS)
 
-    def as_form(self) -> list[tuple[str, str]]:
-        form: list[tuple[str, str]] = [
-            ("consolidateHeader", str(self.consolidate_header)),
-            ("consolidateCitations", str(self.consolidate_citations)),
-            ("includeRawCitations", "1" if self.include_raw_citations else "0"),
-            ("segmentSentences", "1" if self.segment_sentences else "0"),
-        ]
-        # teiCoordinates is a repeated field, one value per element name.
-        form.extend(("teiCoordinates", element) for element in self.coordinates)
-        return form
+    def as_form(self) -> dict[str, str | list[str]]:
+        """Multipart form fields.
+
+        A **dict with a list value** for the repeated field, not a list of tuples:
+        httpx builds a sync-only stream when `data=` is a list of pairs alongside
+        `files=`, and then refuses to send it from an AsyncClient with
+        "Attempted to send an sync request with an AsyncClient instance". A list value
+        produces the same repeated `teiCoordinates` fields on the wire. See memory.md §4.
+        """
+        return {
+            "consolidateHeader": str(self.consolidate_header),
+            "consolidateCitations": str(self.consolidate_citations),
+            "includeRawCitations": "1" if self.include_raw_citations else "0",
+            "segmentSentences": "1" if self.segment_sentences else "0",
+            # One repeated field per element we want coordinates for.
+            "teiCoordinates": list(self.coordinates),
+        }
 
 
 class GrobidClient:
