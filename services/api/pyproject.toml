@@ -17,6 +17,11 @@ dependencies = [
     "python-multipart>=0.0.17",
     "rapidfuzz>=3.10",
     "anthropic>=0.40",
+    # Added for B3's API layer and B2's embedding path. Kept here rather than in a
+    # second requirements file so the container and the dev venv install the same set.
+    "sse-starlette>=2.1",
+    "arq>=0.26",
+    "voyageai>=0.3",
 ]
 
 [project.optional-dependencies]

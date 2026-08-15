@@ -29,7 +29,7 @@ from app.core.contracts import ConfidenceTier, Document, ParsedReference, ParseF
 from app.core.errors import ConfigurationError, StyleDetectionFailure
 from app.ir import ids
 from app.ir.traversal import iter_anchors
-from app.parsing.arbiter import Arbiter, Reconciliation
+from app.parsing.arbiter import Arbiter, ArbiterProviders, Reconciliation
 from app.parsing.grobid import GrobidClient
 from app.parsing.models import ParsedDocument, TierCounts
 from app.parsing.references import references_from_tei
@@ -45,6 +45,7 @@ __all__ = [
     "attach_source_ids",
     "IngestPipeline",
     "get_ingest_pipeline",
+    "build_default_arbiter",
     "reset_ingest_pipeline",
     "build_parse_report",
 ]
@@ -386,6 +387,45 @@ def build_parse_report(result: IngestResult) -> dict[str, Any]:
     }
 
 
+def build_default_arbiter(settings: Any) -> Arbiter:
+    """Assemble the arbiter from B2's provider adapters.
+
+    The API layer calls `get_ingest_pipeline(settings)` with settings and nothing else,
+    so something has to turn settings into three adapters. This is a *use* of
+    `app/providers/` through its public constructors — nothing here writes to
+    `source_store`; the adapters do that themselves from their own HTTP responses (HR-1).
+
+    It raises rather than returning a partial set. An arbiter missing its Crossref
+    adapter silently stops resolving every DOI-bearing reference in the paper, which
+    looks exactly like a bibliography that could not be verified.
+    """
+    from app.providers.cache import PostgresResponseCache
+    from app.providers.crossref import CrossrefProvider
+    from app.providers.openalex import OpenAlexProvider
+    from app.providers.semantic_scholar import SemanticScholarProvider
+    from app.providers.source_store import PostgresSourceStore
+
+    cache = PostgresResponseCache()
+    store = PostgresSourceStore()
+    return Arbiter(
+        ArbiterProviders(
+            crossref=CrossrefProvider(
+                mailto=settings.openalex_mailto, cache=cache, store=store
+            ),
+            semantic_scholar=SemanticScholarProvider(
+                api_key=settings.semantic_scholar_api_key, cache=cache, store=store
+            ),
+            openalex=OpenAlexProvider(
+                api_key=settings.openalex_api_key,
+                mailto=settings.openalex_mailto,
+                cache=cache,
+                store=store,
+            ),
+        ),
+        accept_threshold=settings.arbiter_accept_threshold,
+    )
+
+
 def get_ingest_pipeline(
     settings: Any,
     *,
@@ -397,13 +437,15 @@ def get_ingest_pipeline(
 ) -> IngestPipeline:
     """Factory for the API layer. One pipeline per process.
 
-    `arbiter` must be supplied by the caller: building it needs provider adapters, whose
-    construction (cache, source store, limiters) belongs to `app/providers/` and whose
-    wiring belongs to the API layer. Reaching across to assemble them here would couple
-    parsing to B2's constructor signatures for no benefit.
+    Pass `arbiter=` to control the wiring; otherwise one is built from `settings` via
+    `build_default_arbiter`. Either way there *is* an arbiter, unless the caller states
+    `allow_unreconciled=True` — a pipeline that quietly resolves nothing is the failure
+    mode ADR-010 exists to prevent.
     """
     global _PIPELINE
     if _PIPELINE is None:
+        if arbiter is None and not allow_unreconciled:
+            arbiter = build_default_arbiter(settings)
         _PIPELINE = IngestPipeline(
             grobid=grobid or GrobidClient(),
             repair_threshold=settings.repair_confidence_threshold,
