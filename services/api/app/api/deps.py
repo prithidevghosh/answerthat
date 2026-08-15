@@ -161,16 +161,16 @@ def build_services() -> Services:
         settings, "reattachment_threshold", DEFAULT_SIMILARITY_THRESHOLD
     )
 
-    _bind(services, "documents", "app.ir.store", "get_document_store", settings)
-    _bind(services, "ingest", "app.parsing.pipeline", "get_ingest_pipeline", settings)
-    _bind(services, "style", "app.parsing.style", "get_style_service", settings)
-    _bind(services, "render_probe", "app.export.pandoc", "get_render_probe", settings)
-    _bind(services, "exporter", "app.export.latex", "get_exporter", settings)
-    _bind(services, "sources", "app.providers.store", "get_source_reader", settings)
-    _bind(services, "retrieval", "app.review.retrieval", "get_retrieval_service", settings)
-    _bind(services, "verifier", "app.review.verify", "get_verification_service", settings)
-    _bind(services, "claims", "app.review.claims", "get_claim_extractor", settings)
-    _bind(services, "review", "app.review.runner", "get_review_runner", settings)
+    _bind_sources(services, settings)
+    _bind_documents(services, settings)
+    _bind_export(services, settings)
+
+    _bind(services, "ingest", "app.parsing.pipeline", ("get_ingest_pipeline",), settings)
+    _bind(services, "style", "app.parsing.style", ("get_style_service",), settings)
+    _bind(services, "retrieval", "app.review.retrieval", ("get_retrieval_service",), settings)
+    _bind(services, "verifier", "app.review.verify", ("get_verification_service",), settings)
+    _bind(services, "claims", "app.review.claims", ("get_claim_extractor",), settings)
+    _bind(services, "review", "app.review.runner", ("get_review_runner",), settings)
 
     from app.api.models import build_model_clients  # noqa: PLC0415
 
@@ -178,7 +178,51 @@ def build_services() -> Services:
     return services
 
 
-def _bind(services: Services, field: str, module_path: str, factory_name: str, settings: Any) -> None:
+def _bind_sources(services: Services, settings: Any) -> None:
+    """B2's append-only store, behind the read-only `SourceReader` port.
+
+    We take the concrete `PostgresSourceStore` and wrap it, rather than passing it through:
+    the adapter exposes `get`/`has`/`warm` and nothing else, so `put` is not reachable from
+    anywhere in `app/agent/` even by accident (HR-1).
+    """
+    try:
+        from app.api.adapters import SourceReaderAdapter
+        from app.providers.source_store import PostgresSourceStore
+    except ImportError as exc:
+        log.warning("sources unavailable: %s", exc)
+        return
+    services.sources = SourceReaderAdapter(PostgresSourceStore())
+
+
+def _bind_documents(services: Services, settings: Any) -> None:
+    try:
+        from app.api.adapters import DocumentStoreAdapter
+        from app.ir.store import PostgresDocumentStore
+    except ImportError as exc:
+        log.warning("documents unavailable: %s", exc)
+        return
+    services.documents = DocumentStoreAdapter(PostgresDocumentStore(getattr(settings, "session", None)))
+
+
+def _bind_export(services: Services, settings: Any) -> None:
+    if services.sources is None:
+        log.warning("export unavailable: it needs the source store for CSL lookup")
+        return
+    try:
+        from app.api.adapters import LatexExporter, PandocRenderProbe, csl_lookup_for
+    except ImportError as exc:
+        log.warning("export unavailable: %s", exc)
+        return
+
+    lookup = csl_lookup_for(services.sources)
+    styles_dir = getattr(settings, "csl_styles_dir", None)
+    services.render_probe = PandocRenderProbe(lookup, styles_dir)
+    services.exporter = LatexExporter(lookup, styles_dir)
+
+
+def _bind(
+    services: Services, field: str, module_path: str, factory_names: tuple[str, ...], settings: Any
+) -> None:
     """Bind one collaborator, tolerating only the specific case of "not committed yet".
 
     An ImportError here means another agent's package has not landed. That is a real,
@@ -187,18 +231,19 @@ def _bind(services: Services, field: str, module_path: str, factory_name: str, s
     other exception is a genuine fault in that package and is allowed to propagate.
     """
     try:
-        module = __import__(module_path, fromlist=[factory_name])
+        module = __import__(module_path, fromlist=list(factory_names))
     except ImportError as exc:
         log.warning("%s unavailable: %s (%s)", field, module_path, exc)
         return
 
-    factory = getattr(module, factory_name, None)
-    if factory is None:
-        log.warning("%s: %s has no %s()", field, module_path, factory_name)
-        return
+    for factory_name in factory_names:
+        factory = getattr(module, factory_name, None)
+        if factory is not None:
+            setattr(services, field, factory(settings))
+            log.info("bound %s → %s.%s", field, module_path, factory_name)
+            return
 
-    setattr(services, field, factory(settings))
-    log.info("bound %s → %s.%s", field, module_path, factory_name)
+    log.warning("%s: %s has none of %s", field, module_path, list(factory_names))
 
 
 __all__ = ["DependencyUnavailable", "Services", "build_services"]

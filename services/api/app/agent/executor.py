@@ -310,6 +310,11 @@ class OperationExecutor:
             )
         if old not in anchor.source_ids:
             raise ExecutionError(f"anchor {params.anchor_id!r} does not cite {old!r}")
+        # B2's sync `has` answers from an index that must be warmed first; an unwarmed id
+        # raises rather than reporting absence (memory.md §5, B2 → B3).
+        warm = getattr(self._sources, "warm", None)
+        if warm is not None:
+            await warm([params.new_source_id])
         if not self._sources.has(params.new_source_id):
             raise ExecutionError(
                 f"source_id {params.new_source_id!r} is not in the source store. Only retrieval "

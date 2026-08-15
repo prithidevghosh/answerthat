@@ -110,6 +110,11 @@ class InvariantKernel:
         self._render = render_probe
         self.similarity_threshold = similarity_threshold
 
+    @property
+    def sources(self) -> SourceReader:
+        """Read-only, by type. There is no `put` on this object and never will be (HR-1)."""
+        return self._sources
+
     # ------------------------------------------------------------------ public API
 
     def evaluate(
@@ -157,6 +162,28 @@ class InvariantKernel:
             return KernelVerdict(decision="flag", reasons=flag_reasons, flags=flags)
 
         return KernelVerdict(decision="accept", reasons=[], flags=[])
+
+    @staticmethod
+    def referenced_source_ids(change: ProposedChange) -> list[str]:
+        """Every `source_id` REJECT rule 1 will look up, computed without touching the store.
+
+        This exists so a caller can warm B2's source store before calling `evaluate` — its
+        sync `has()` answers from an in-process index and raises on an id that was never
+        warmed, because reporting "we never looked" as "does not exist" would be a false
+        REJECT indistinguishable from a real one (memory.md §5, B2 → B3).
+
+        Warming is the caller's job precisely so that it is not the kernel's: the kernel
+        stays pure and synchronous, with no reason to ever await anything.
+        """
+        try:
+            fragment = Fragment.model_validate(change.new_fragment)
+        except ValidationError:
+            return list(dict.fromkeys(change.new_source_ids))
+
+        ids = list(change.new_source_ids)
+        for anchor, _where in _fragment_anchors(fragment):
+            ids.extend(anchor.source_ids)
+        return list(dict.fromkeys(ids))
 
     def project(self, before: Document, change: ProposedChange) -> Document:
         """The after-document the kernel judged. Used by the diff builder and by commit,

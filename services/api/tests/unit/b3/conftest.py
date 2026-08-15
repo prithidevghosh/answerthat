@@ -28,11 +28,23 @@ from app.core.contracts import (  # noqa: E402
 # --------------------------------------------------------------------------- fakes
 
 
+class SourceNotIndexed(RuntimeError):
+    """Mirrors B2's error for a `has()` on an id that was never warmed."""
+
+
 class FakeSourceReader:
     """Stands in for B2's append-only source_store. Deliberately read-only: there is no
-    `put`, because `app/agent/` must not be able to create a source_id (HR-1)."""
+    `put`, because `app/agent/` must not be able to create a source_id (HR-1).
 
-    def __init__(self, source_ids: list[str] | None = None) -> None:
+    It reproduces B2's warming contract exactly, including the part that bites: `has()` on
+    an id that was never warmed **raises** rather than answering False (memory.md §5,
+    B2 → B3). Faking that away would let a warming bug pass here and fail in production as
+    a false REJECT, so the fake keeps the sharp edge.
+    """
+
+    def __init__(self, source_ids: list[str] | None = None, *, strict: bool = False) -> None:
+        self.warmed: set[str] = set()
+        self.strict = strict
         self._records = {
             sid: SourceRecord(
                 source_id=sid,
@@ -49,11 +61,25 @@ class FakeSourceReader:
             for sid in (source_ids or [])
         }
 
+    async def warm(self, source_ids: list[str]) -> None:
+        self.warmed.update(source_ids)
+
     def get(self, source_id: str) -> SourceRecord | None:
+        self._assert_warmed(source_id)
         return self._records.get(source_id)
 
     def has(self, source_id: str) -> bool:
+        self._assert_warmed(source_id)
         return source_id in self._records
+
+    def _assert_warmed(self, source_id: str) -> None:
+        """Strict mode reproduces B2's sharp edge; the default is a pre-warmed index so the
+        kernel's own unit tests can stay about the kernel."""
+        if self.strict and source_id not in self.warmed:
+            raise SourceNotIndexed(
+                f"{source_id!r} was never warmed; 'we never looked' must not be reported as "
+                f"'does not exist'"
+            )
 
 
 class AlwaysRenders:

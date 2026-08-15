@@ -407,6 +407,75 @@ async def test_approving_an_unknown_change_id_is_an_error(sources, base_document
         )
 
 
+# ===========================================================================
+# B2's source-store warming contract (memory.md §5, B2 → B3)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_the_loop_warms_every_source_id_before_the_kernel_checks_it(base_document):
+    """An unwarmed id raises instead of reporting absence, so a missed warm would surface
+    as a crash — or worse, be caught somewhere and read as a fabricated source."""
+    from conftest import FakeSourceReader
+
+    strict = FakeSourceReader(["s2:aaa", "s2:bbb", "openalex:W123"], strict=True)
+    loop, _model, _kernel = build_loop(
+        strict,
+        [{
+            "operations": [{
+                "op": "ReplaceCitation",
+                "target_ids": ["span-1"],
+                "params": {"anchor_id": "anc-1", "new_source_id": "openalex:W123"},
+            }]
+        }],
+    )
+    result = await loop.run(base_document, "swap that citation")
+
+    assert result.status == "awaiting_approval", result.rejected
+    # The swap leaves only the incoming id in the change, and that is precisely the set
+    # REJECT rule 1 looks up — so it is precisely the set that must be warmed.
+    assert "openalex:W123" in strict.warmed
+
+
+@pytest.mark.asyncio
+async def test_a_fabricated_id_is_warmed_too_so_the_reject_rests_on_a_real_answer(base_document):
+    """The fabricated id must be warmed as well: it comes back known-absent, and REJECT
+    rule 1 then fires on an answer rather than on an exception."""
+    from conftest import FakeSourceReader
+
+    strict = FakeSourceReader(["s2:aaa", "s2:bbb"], strict=True)
+    loop, _model, _kernel = build_loop(strict, [FABRICATING_PLAN] * 3)
+    result = await loop.run(base_document, "swap that citation")
+
+    assert result.status == "failed"
+    assert "s2:fabricated" in strict.warmed
+    assert any("not in the source store" in r for r in result.rejected[0].reasons)
+
+
+@pytest.mark.asyncio
+async def test_commit_warms_before_re_judging(sources, base_document):
+    """The commit path reaches the kernel too, and re-judges against the current document."""
+    from conftest import FakeSourceReader
+
+    strict = FakeSourceReader(["s2:aaa", "s2:bbb", "openalex:W123"], strict=True)
+    loop, _model, kernel = build_loop(strict, [SHORTEN_PLAN])
+    documents = InMemoryDocumentStore()
+    documents.seed(base_document)
+    result = await loop.run(base_document, "shorten it")
+    strict.warmed.clear()
+
+    versions = VersionService(documents, kernel)
+    commit = await versions.commit(
+        result,
+        ApprovalRequest(
+            change_set_id=result.change_set_id,
+            approved_change_ids=[c.change_id for c in result.changes],
+        ),
+    )
+    assert commit.committed
+    assert {"s2:aaa", "s2:bbb"} <= strict.warmed
+
+
 def _spans(document):
     from app.agent.fragment import iter_spans
 

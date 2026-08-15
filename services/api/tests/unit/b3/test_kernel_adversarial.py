@@ -498,12 +498,32 @@ def test_kernel_is_pure_and_leaves_the_input_document_untouched(kernel, base_doc
 
 
 def test_kernel_module_makes_no_model_call():
-    """ADR-007: the kernel is pure code. Nothing in it may reach a model client."""
+    """ADR-007: the kernel is pure code, and this is checked against the syntax tree rather
+    than the file's text so that prose in a docstring can neither fake a violation nor hide
+    one."""
+    import ast
     import pathlib
 
-    source = pathlib.Path(__file__).resolve().parents[3].joinpath("app/agent/kernel.py").read_text()
-    for forbidden in ("anthropic", "openai", "await ", "httpx", "requests", "TextModel", "StructuredModel"):
-        assert forbidden not in source, f"kernel.py must not reference {forbidden!r}"
+    path = pathlib.Path(__file__).resolve().parents[3] / "app/agent/kernel.py"
+    tree = ast.parse(path.read_text())
+
+    awaits = [n for n in ast.walk(tree) if isinstance(n, (ast.Await, ast.AsyncFunctionDef))]
+    assert not awaits, "kernel.py is synchronous: nothing in it may await, so nothing can be I/O"
+
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+            if node.module == "app.agent.ports":
+                names = {alias.name for alias in node.names}
+                assert names == {"RenderProbe", "SourceReader"}, (
+                    f"the kernel's only collaborators are RenderProbe and SourceReader; found {names}"
+                )
+
+    for forbidden in ("anthropic", "openai", "httpx", "requests", "voyageai", "aiohttp"):
+        assert forbidden not in imported, f"kernel.py must not import {forbidden!r}"
 
 
 def test_reject_beats_flag(kernel, base_document):

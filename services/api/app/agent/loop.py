@@ -199,6 +199,7 @@ class CommandLoop:
 
             change = execution.change
             assert change is not None
+            await warm_sources_for(self._kernel, change)
             verdict = self._kernel.evaluate(before=working, change=change, context=execution.context)
 
             if verdict.decision == "reject":
@@ -235,6 +236,21 @@ class CommandLoop:
             attempts=attempts,
             message=message,
         )
+
+
+async def warm_sources_for(kernel: InvariantKernel, change: ProposedChange) -> None:
+    """Index every `source_id` the kernel is about to check, before it checks it.
+
+    Called on the two paths that reach `evaluate`: here and `VersionService.commit`. The
+    ids a change *claims* are exactly the ids we warm, fabricated ones included — those come
+    back known-absent and REJECT rule 1 fires on a real answer rather than on an exception.
+    """
+    warm = getattr(kernel.sources, "warm", None)
+    if warm is None:
+        return
+    ids = kernel.referenced_source_ids(change)
+    if ids:
+        await warm(ids)
 
 
 def _orphan_options(

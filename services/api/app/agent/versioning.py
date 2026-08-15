@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from app.agent.diff import StructuralDiff, build_diff
 from app.agent.fragment import iter_spans, source_multiset
 from app.agent.kernel import ChangeContext, InvariantKernel
-from app.agent.loop import EvaluatedChange, ProposedChangeSet
+from app.agent.loop import EvaluatedChange, ProposedChangeSet, warm_sources_for
 from app.agent.ports import DocumentStore
 from app.core.contracts import (
     CitationAnchor,
@@ -123,6 +123,7 @@ class VersionService:
         last_verdict: KernelVerdict | None = None
 
         for change in approved:
+            await warm_sources_for(self._kernel, change.change)
             verdict = self._kernel.evaluate(
                 before=working, change=change.change, context=change.context
             )
@@ -336,6 +337,7 @@ class VersionService:
                 f"{sum(removals.values())} removed."
             ),
         )
+        await warm_sources_for(self._kernel, change)
         verdict = self._kernel.evaluate(
             before=working,
             change=change,

@@ -95,8 +95,16 @@ class ReviewRunner(Protocol):
 class SourceReader(Protocol):
     """Read-only view of the append-only source_store. B3 gets `get`/`has` only —
     there is deliberately no `put` here, so HR-1 is unviolatable by construction from
-    inside `app/agent/`."""
+    inside `app/agent/`.
 
+    `get`/`has` are synchronous because Appendix A says so, and they answer from an
+    in-process index. `warm` fills that index and **must be awaited for every id before it
+    is checked** — an unwarmed id raises rather than reporting absence, since "we never
+    looked" presented as "does not exist" would be a false kernel REJECT with no way to
+    tell it from a real one (memory.md §5, B2 → B3).
+    """
+
+    async def warm(self, source_ids: list[str]) -> None: ...
     def get(self, source_id: str) -> SourceRecord | None: ...
     def has(self, source_id: str) -> bool: ...
 
