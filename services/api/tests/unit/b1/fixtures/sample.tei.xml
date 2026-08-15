@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TEI xmlns="http://www.tei-c.org/ns/1.0">
+  <teiHeader>
+    <fileDesc>
+      <titleStmt>
+        <title level="a" type="main" coords="1,72.00,94.53,455.28,19.46">Revisiting Quadratic Attention on Modern Hardware</title>
+      </titleStmt>
+      <profileDesc>
+        <abstract>
+          <div>
+            <p><s>We revisit the assumption that attention is the bottleneck.</s><s>Our measurements contradict the received view <ref type="bibr" target="#b1">[2]</ref>.</s></p>
+          </div>
+        </abstract>
+      </profileDesc>
+    </fileDesc>
+  </teiHeader>
+  <text xml:lang="en">
+    <body>
+      <div xmlns="http://www.tei-c.org/ns/1.0">
+        <head n="1" coords="2,72.00,120.00,100.00,12.00">Introduction</head>
+        <p coords="2,72.00,140.00,455.00,60.00"><s>Transformer models dominate sequence modelling <ref type="bibr" target="#b0">[1]</ref>.</s><s>A long line of efficiency work has followed <ref type="bibr" target="#b1">[2]</ref><ref type="bibr" target="#b2">[3]</ref>.</s><s>We disagree with the framing in <ref type="bibr" target="#b99">[42]</ref>.</s></p>
+        <p><s>This paper makes three contributions.</s></p>
+      </div>
+      <div xmlns="http://www.tei-c.org/ns/1.0">
+        <head n="2.1">Experimental Setup</head>
+        <p><s>We follow the standard recipe of <ref type="bibr" target="#b0">[1]</ref> without modification.</s></p>
+        <formula xml:id="formula_0">A(Q, K, V ) = softmax(QK T )V</formula>
+      </div>
+      <figure xml:id="fig_0" coords="4,72.00,300.00,455.00,200.00">
+        <head>Figure 1</head>
+        <figDesc>Throughput against sequence length on an H100.</figDesc>
+      </figure>
+      <figure type="table" xml:id="tab_0">
+        <head>Table 1</head>
+        <figDesc>Ablation over head count.</figDesc>
+      </figure>
+    </body>
+    <back>
+      <div type="references">
+        <listBibl>
+          <biblStruct xml:id="b0" coords="5,72.00,100.00,455.00,20.00">
+            <analytic>
+              <title level="a" type="main">Attention Is All You Need</title>
+              <author>
+                <persName><forename type="first">Ashish</forename><surname>Vaswani</surname></persName>
+              </author>
+              <author>
+                <persName><forename type="first">Noam</forename><surname>Shazeer</surname></persName>
+              </author>
+            </analytic>
+            <monogr>
+              <title level="m">Advances in Neural Information Processing Systems</title>
+              <meeting>NeurIPS</meeting>
+              <imprint>
+                <date type="published" when="2017" />
+                <biblScope unit="page" from="5998" to="6008" />
+              </imprint>
+            </monogr>
+            <note type="raw_reference">A. Vaswani, N. Shazeer, "Attention is all you need," in Advances in Neural Information Processing Systems, 2017, pp. 5998-6008.</note>
+          </biblStruct>
+
+          <biblStruct xml:id="b1">
+            <analytic>
+              <title level="a" type="main">Efficient Transformers: A Survey</title>
+              <author>
+                <persName><forename type="first">Jan</forename><nameLink>van der</nameLink><surname>Berg</surname></persName>
+              </author>
+              <idno type="DOI">10.1145/3530811</idno>
+            </analytic>
+            <monogr>
+              <title level="j">ACM Computing Surveys</title>
+              <imprint>
+                <date type="published" when="2022-09-15" />
+                <biblScope unit="volume">55</biblScope>
+                <biblScope unit="issue">6</biblScope>
+                <biblScope unit="page" from="1" to="28" />
+              </imprint>
+            </monogr>
+            <note type="raw_reference">J. van der Berg, "Efficient transformers: a survey," ACM Computing Surveys, vol. 55, no. 6, pp. 1-28, 2022.</note>
+          </biblStruct>
+
+          <biblStruct xml:id="b2">
+            <monogr>
+              <title level="m">The Elements of Statistical Learning</title>
+              <author>
+                <persName><forename type="first">Trevor</forename><surname>Hastie</surname></persName>
+              </author>
+              <imprint>
+                <publisher>Springer</publisher>
+                <date type="published" when="2009" />
+              </imprint>
+            </monogr>
+            <note type="raw_reference">T. Hastie, The Elements of Statistical Learning. Springer, 2009.</note>
+          </biblStruct>
+
+          <biblStruct xml:id="b3">
+            <monogr>
+              <imprint />
+            </monogr>
+            <note type="raw_reference">Smith, J. mumble mumble 20??, pp. ??-??</note>
+          </biblStruct>
+        </listBibl>
+      </div>
+    </back>
+  </text>
+</TEI>
