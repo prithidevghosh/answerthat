@@ -59,7 +59,7 @@ export function RenderedCitation({
 
   if (finalError) {
     return (
-      <p className={`font-ui text-2xs text-sanguine ${className}`}>
+      <p className={`font-ui text-2xs text-madder ${className}`}>
         This record could not be rendered in {styleId}. {finalError}
       </p>
     );

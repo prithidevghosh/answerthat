@@ -15,8 +15,8 @@ import type { RejectedOperation } from '@/lib/api/types';
  */
 export function RejectedOperationCard({ rejected }: { rejected: RejectedOperation }) {
   return (
-    <Plate as="li" accent="sanguine" className="px-6 py-6 sm:px-8">
-      <span className="inline-flex items-center gap-2 font-ui text-xs font-medium text-sanguine">
+    <Plate as="li" accent="madder" className="px-6 py-6 sm:px-8">
+      <span className="inline-flex items-center gap-2 font-ui text-xs font-medium text-madder">
         <Seal kind="broken" size={17} />
         Refused — this part of your instruction was not applied
       </span>
@@ -31,7 +31,7 @@ export function RejectedOperationCard({ rejected }: { rejected: RejectedOperatio
         {rejected.reasons.map((reason, i) => (
           <li
             key={i}
-            className="measure border-l-2 border-sanguine/40 pl-4 text-xs leading-relaxed text-secondary"
+            className="measure border-l-2 border-madder/40 pl-4 text-xs leading-relaxed text-secondary"
           >
             {reason}
           </li>

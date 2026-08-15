@@ -138,42 +138,51 @@ export function UploadDropTarget() {
         type="button"
         onClick={() => inputRef.current?.click()}
         aria-describedby="upload-help"
-        className={`group relative flex h-[248px] w-full max-w-[560px] flex-col items-center justify-center gap-6 rounded border bg-plate/60 px-8 transition-colors duration-ink ease-ink ${
+        // An OPEN FRAME, not a filled panel. design-system.md §4 forbids a
+        // scrim over the plate; the sky behind this is already at paper value,
+        // so the frame needs no fill to be legible and the engraving shows
+        // through it intact.
+        className={`group relative flex h-[136px] w-full flex-col items-center justify-center gap-3 rounded border px-8 transition-colors duration-ink ease-ink ${
           dragging
-            ? 'border-cobalt bg-cobalt/[0.05]'
-            : 'border-[var(--rule-strong)] hover:bg-plate hover:border-cobalt'
+            ? 'border-indigo bg-paper/70'
+            : 'border-[var(--rule-strong)] hover:border-indigo hover:bg-paper/40'
         }`}
       >
         <span
           aria-hidden="true"
-          className="text-cobalt/70 transition-colors duration-ink group-hover:text-cobalt"
+          className="text-indigo/70 transition-colors duration-ink group-hover:text-indigo"
         >
           <PlateIcon />
         </span>
         <span className="text-center">
-          <span className="block font-display text-xl text-primary">
+          <span className="block font-display text-lg text-primary">
             {dragging ? 'Release to begin' : 'Drop your paper here'}
           </span>
-          <span className="mt-2 block font-ui text-xs text-secondary">
-            or <span className="underline decoration-cobalt/40 underline-offset-4">choose a PDF</span>
+          <span className="mt-1 block font-ui text-xs text-secondary">
+            or <span className="underline decoration-indigo/40 underline-offset-4">choose a PDF</span>
           </span>
         </span>
       </button>
 
-      <p id="upload-help" className="mt-6 font-ui text-2xs text-muted">
-        PDF, up to 50 MB. Nothing is published, and nothing leaves your document but its citations.
+      {/*
+        Kept inside the frame's own column and immediately beneath it, so the
+        whole block stays within the plate's calm upper region. Nothing on this
+        screen extends past the drop target.
+      */}
+      <p id="upload-help" className="mt-4 font-ui text-2xs text-muted">
+        PDF, up to 50 MB. Nothing is published.
       </p>
 
       {state.kind === 'failed' && (
         <div
           role="alert"
-          className="mt-8 flex w-full max-w-[560px] items-start gap-4 rounded border border-sanguine/40 bg-sanguine/[0.05] px-6 py-5 text-left"
+          className="mt-6 flex w-full items-start gap-4 rounded border border-madder/40 bg-paper/85 px-6 py-5 text-left"
         >
-          <span className="mt-px shrink-0 text-sanguine">
+          <span className="mt-px shrink-0 text-madder">
             <Seal kind="broken" size={18} />
           </span>
           <div>
-            <p className="font-ui text-xs font-medium text-sanguine">{state.message}</p>
+            <p className="font-ui text-xs font-medium text-madder">{state.message}</p>
             {state.detail && (
               <p className="mt-1.5 text-xs leading-relaxed text-secondary">{state.detail}</p>
             )}
@@ -183,7 +192,7 @@ export function UploadDropTarget() {
                 setState({ kind: 'idle' });
                 inputRef.current?.click();
               }}
-              className="mt-3 font-ui text-2xs text-cobalt underline decoration-cobalt/30 underline-offset-2 hover:decoration-cobalt"
+              className="mt-3 font-ui text-2xs text-indigo underline decoration-indigo/30 underline-offset-2 hover:decoration-indigo"
             >
               Choose another file
             </button>
@@ -198,34 +207,34 @@ function Working({ progress }: { progress: UploadProgress }) {
   const pct = progress.fraction === null ? null : Math.round(progress.fraction * 100);
 
   return (
-    <div className="flex w-full max-w-[560px] flex-col items-center" aria-live="polite">
-      <div className="flex h-[248px] w-full flex-col items-center justify-center gap-8 rounded border border-hair bg-plate/60 px-10">
-        <Fleuron size={20} className="text-cobalt/50" />
+    <div className="flex w-full flex-col items-center" aria-live="polite">
+      <div className="flex h-[136px] w-full flex-col items-center justify-center gap-5 rounded border border-hair bg-paper/60 px-10">
+        <Fleuron size={16} className="text-indigo/50" />
 
         <div className="w-full">
-          <p className="text-center font-display text-xl text-primary">
+          <p className="text-center font-display text-lg text-primary">
             {STAGE_TEXT[progress.stage]}
           </p>
 
           {/* An indeterminate stage says so rather than animating a fake bar:
               we genuinely cannot report a fraction for server-side work. */}
-          <div className="mt-6 h-px w-full bg-[var(--rule-hair)]">
+          <div className="mt-4 h-px w-full bg-[var(--rule-hair)]">
             {pct !== null && (
               <div
-                className="h-px bg-cobalt transition-[width] duration-ink ease-ink"
+                className="h-px bg-indigo transition-[width] duration-ink ease-ink"
                 style={{ width: `${pct}%` }}
               />
             )}
           </div>
 
-          <p className="mt-4 text-center font-ui text-2xs text-muted">
+          <p className="mt-3 text-center font-ui text-2xs text-muted">
             {pct !== null ? `${pct}%` : 'This step does not report progress'}
             {progress.detail && <> · {progress.detail}</>}
           </p>
         </div>
       </div>
 
-      <p className="mt-6 font-ui text-2xs text-muted">
+      <p className="mt-4 font-ui text-2xs text-muted">
         Parsing takes about a minute for a typical paper.
       </p>
     </div>
@@ -236,8 +245,8 @@ function Working({ progress }: { progress: UploadProgress }) {
 function PlateIcon() {
   return (
     <svg
-      width="52"
-      height="52"
+      width="38"
+      height="38"
       viewBox="0 0 52 52"
       fill="none"
       stroke="currentColor"

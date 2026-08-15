@@ -53,7 +53,7 @@ export function ReviewFeed({ docId, styleId }: { docId: string; styleId: string 
         </div>
         <Link
           href={`/documents/${docId}/edit`}
-          className="rounded border border-cobalt/40 px-5 py-2.5 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06]"
+          className="rounded border border-indigo/40 px-5 py-2.5 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06]"
         >
           Open edit console →
         </Link>
@@ -76,7 +76,7 @@ export function ReviewFeed({ docId, styleId }: { docId: string; styleId: string 
 
       {review.phase === 'done' && review.findings.length > 0 && (
         <div className="mt-16">
-          <Fleuron size={16} className="mx-auto text-cobalt/40" />
+          <Fleuron size={16} className="mx-auto text-indigo/40" />
           <p className="mt-4 text-center font-ui text-2xs text-muted">
             Review complete — {review.verified} of {review.total} claims verified,{' '}
             {review.findings.length} finding{review.findings.length === 1 ? '' : 's'}.
@@ -114,12 +114,12 @@ function ProgressStrip({ review }: { review: ReturnType<typeof useReviewStream> 
 
   const tone =
     phase === 'failed'
-      ? 'text-sanguine'
+      ? 'text-madder'
       : phase === 'interrupted'
         ? 'text-sepia'
         : phase === 'done'
           ? 'text-verdigris'
-          : 'text-cobalt';
+          : 'text-indigo';
 
   return (
     <section aria-label="Review progress" className="mt-12">
@@ -143,7 +143,7 @@ function ProgressStrip({ review }: { review: ReturnType<typeof useReviewStream> 
 
       <div className="mt-4 h-px w-full bg-[var(--rule-hair)]">
         <div
-          className="h-px bg-cobalt transition-[width] duration-ink-slow ease-ink"
+          className="h-px bg-indigo transition-[width] duration-ink-slow ease-ink"
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -151,7 +151,7 @@ function ProgressStrip({ review }: { review: ReturnType<typeof useReviewStream> 
       {review.message && (
         <p
           role="status"
-          className={`mt-3 font-ui text-2xs ${phase === 'failed' ? 'text-sanguine' : 'text-sepia'}`}
+          className={`mt-3 font-ui text-2xs ${phase === 'failed' ? 'text-madder' : 'text-sepia'}`}
         >
           {review.message}
           {phase === 'interrupted' && ' Findings already shown are unaffected.'}
@@ -175,8 +175,8 @@ function ProgressStrip({ review }: { review: ReturnType<typeof useReviewStream> 
 function EmptyState({ review }: { review: ReturnType<typeof useReviewStream> }) {
   if (review.phase === 'failed') {
     return (
-      <Plate accent="sanguine" className="mt-12 px-8 py-10">
-        <span className="inline-flex items-center gap-3 font-ui text-xs font-medium text-sanguine">
+      <Plate accent="madder" className="mt-12 px-8 py-10">
+        <span className="inline-flex items-center gap-3 font-ui text-xs font-medium text-madder">
           <Seal kind="broken" size={18} />
           The review could not run
         </span>
@@ -217,7 +217,7 @@ function EmptyState({ review }: { review: ReturnType<typeof useReviewStream> }) 
   // Still running, nothing through yet.
   return (
     <div className="mt-16 flex flex-col items-center py-16 text-center">
-      <Fleuron size={22} className="text-cobalt/35" />
+      <Fleuron size={22} className="text-indigo/35" />
       <p className="mt-6 font-display text-xl text-primary">No findings yet</p>
       <p className="measure mt-3 text-xs leading-relaxed text-secondary">
         The review is running. Semantic Scholar allows about one request a second, so a full paper

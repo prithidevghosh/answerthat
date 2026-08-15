@@ -1,4 +1,4 @@
-import { MarginPlates } from '@/components/Ornament';
+import { HorizonBand } from '@/components/Ornament';
 import { FixtureBanner } from '@/components/FixtureBanner';
 import { ConfigurationError } from '@/components/ConfigurationError';
 import { WorkbenchHeader } from '@/components/WorkbenchHeader';
@@ -52,8 +52,6 @@ export default async function ParsePage({ params }: { params: Promise<{ docId: s
   return (
     <>
       <FixtureBanner />
-      {/* Quiet at the desk: the plates drop to low opacity on working screens. */}
-      <MarginPlates strength="quiet" />
       <WorkbenchHeader
         docId={docId}
         current="parse"
@@ -61,6 +59,8 @@ export default async function ParsePage({ params }: { params: Promise<{ docId: s
         version={result.document.version}
       />
       <ParseInspector docId={docId} result={result} sources={sources} />
+      {/* The plate returns only at the foot, after the content — never behind it. */}
+      <HorizonBand />
     </>
   );
 }

@@ -29,7 +29,7 @@ export function OrphanMarkerCard({ marker }: { marker: OrphanMarker }) {
                 : [
                     <mark
                       key={`m${i}`}
-                      className="bg-sanguine/[0.12] px-1 font-mono text-xs text-sanguine"
+                      className="bg-madder/[0.12] px-1 font-mono text-xs text-madder"
                     >
                       {marker.marker_text}
                     </mark>,

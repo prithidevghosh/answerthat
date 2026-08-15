@@ -79,7 +79,7 @@ export function FindingCard({
                 before this finding was allowed to exist (ADR-006). Shown in
                 full — never clipped, never summarised.
               */}
-              <blockquote className="mt-2 border-l-2 border-cobalt/30 bg-paper-deep/60 px-5 py-4 text-base italic leading-relaxed text-primary">
+              <blockquote className="mt-2 border-l-2 border-indigo/30 bg-paper-deep/60 px-5 py-4 text-base italic leading-relaxed text-primary">
                 “{finding.verification.quote}”
               </blockquote>
             </figure>
@@ -119,7 +119,7 @@ export function FindingCard({
             href={source.provenance.external_url}
             target="_blank"
             rel="noreferrer noopener"
-            className="mt-3 inline-flex items-center gap-1.5 font-ui text-2xs text-cobalt underline decoration-cobalt/30 underline-offset-2 hover:decoration-cobalt"
+            className="mt-3 inline-flex items-center gap-1.5 font-ui text-2xs text-indigo underline decoration-indigo/30 underline-offset-2 hover:decoration-indigo"
           >
             Open on {PROVIDER_NAME[source.provenance.provider]} ↗
           </a>

@@ -18,11 +18,17 @@ const config: Config = {
         'paper-deep': 'rgb(var(--paper-deep-rgb) / <alpha-value>)',
         plate: 'rgb(var(--plate-rgb) / <alpha-value>)',
 
-        // Inks — semantic, not decorative.
-        cobalt: 'rgb(var(--ink-cobalt-rgb) / <alpha-value>)',
-        'cobalt-lt': 'rgb(var(--ink-cobalt-lt-rgb) / <alpha-value>)',
+        // The indigo ladder, sampled from hero-plate.svg.
+        palest: 'rgb(var(--ink-palest-rgb) / <alpha-value>)',
+        pale: 'rgb(var(--ink-pale-rgb) / <alpha-value>)',
+        slate: 'rgb(var(--ink-slate-rgb) / <alpha-value>)',
+        steel: 'rgb(var(--ink-steel-rgb) / <alpha-value>)',
+        indigo: 'rgb(var(--ink-indigo-rgb) / <alpha-value>)',
+        deepest: 'rgb(var(--ink-deepest-rgb) / <alpha-value>)',
+
+        // Status inks — same press, different plates.
         sepia: 'rgb(var(--ink-sepia-rgb) / <alpha-value>)',
-        sanguine: 'rgb(var(--ink-sanguine-rgb) / <alpha-value>)',
+        madder: 'rgb(var(--ink-madder-rgb) / <alpha-value>)',
         verdigris: 'rgb(var(--ink-verdigris-rgb) / <alpha-value>)',
 
         primary: 'rgb(var(--text-primary-rgb) / <alpha-value>)',
@@ -73,7 +79,7 @@ const config: Config = {
       },
       boxShadow: {
         // Engravings have no drop shadows. This is the ceiling.
-        plate: '0 1px 2px rgba(22,32,46,0.06)',
+        plate: '0 1px 2px rgba(20,31,46,0.06)',
         none: 'none',
       },
       transitionTimingFunction: {

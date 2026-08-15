@@ -61,10 +61,10 @@ export function ChangeCard({
     decision === 'approved'
       ? 'verdigris'
       : decision === 'rejected'
-        ? 'sanguine'
+        ? 'madder'
         : verdict.decision === 'flag'
           ? 'sepia'
-          : 'cobalt';
+          : 'indigo';
 
   return (
     <Plate as="li" accent={accent} className="px-6 py-6 sm:px-8">
@@ -145,7 +145,7 @@ export function ChangeCard({
                 setError(null);
                 onDecide(false);
               }}
-              className="rounded border border-sanguine/45 px-5 py-2 font-ui text-xs text-sanguine transition-colors duration-ink ease-ink hover:bg-sanguine/[0.07] disabled:opacity-50"
+              className="rounded border border-madder/45 px-5 py-2 font-ui text-xs text-madder transition-colors duration-ink ease-ink hover:bg-madder/[0.07] disabled:opacity-50"
             >
               Reject
             </button>
@@ -153,7 +153,7 @@ export function ChangeCard({
         ) : (
           <span
             className={`inline-flex items-center gap-2 font-ui text-xs ${
-              decision === 'approved' ? 'text-verdigris' : 'text-sanguine'
+              decision === 'approved' ? 'text-verdigris' : 'text-madder'
             }`}
           >
             <Seal kind={decision === 'approved' ? 'filled' : 'broken'} size={16} />
@@ -163,7 +163,7 @@ export function ChangeCard({
       </div>
 
       {error && (
-        <p role="alert" className="mt-3 font-ui text-2xs text-sanguine">
+        <p role="alert" className="mt-3 font-ui text-2xs text-madder">
           {error}
         </p>
       )}

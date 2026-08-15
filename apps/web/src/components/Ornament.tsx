@@ -1,80 +1,55 @@
 /**
- * Ornament — margins only, never behind text.
+ * The plate, and the small engraved marks derived from it.
  *
- * design-system.md §4 makes this a hard constraint, so it is enforced here
- * rather than left to each screen to remember:
+ * design-system.md §1: the plate is the stage, and the content sits in the sky
+ * the plate already gives us. It is not cropped to a decorative sliver and it
+ * is never dimmed behind a scrim.
  *
- *  - MarginPlates is `fixed` to the viewport edges and sits outside the
- *    1100px content column. It is `hidden xl:block` — below 1280px the margin
- *    ornament is *removed entirely*, not scaled down.
- *  - It is aria-hidden and pointer-events-none: it carries no meaning and can
- *    never intercept a click.
- *  - Nothing in this file may be rendered inside the content column.
+ * Two placements, and only two:
  *
- * The plates themselves are derived from the project's engraving: the left and
- * right thirds of it, quantized onto the cobalt ink ramp with the plate's sky
- * snapped to --paper so the bands dissolve into the page. See
- * scripts/build-plates.md for the derivation.
+ *  - <HeroPlate/>   the threshold. Full-bleed, full strength, horizon low so
+ *                   the luminous sky fills the upper screen.
+ *  - <HorizonBand/> the working screens. The plate's ground edge at the foot of
+ *                   the document, after the content and never behind it,
+ *                   fading up into the paper. Calm at the desk.
+ *
+ * Both are aria-hidden and pointer-events-none: the plate carries no meaning
+ * and intercepts no clicks.
  */
-
-export type PlateStrength = 'full' | 'quiet';
 
 /**
- * @param strength 'full' is the upload threshold — the one screen that carries
- * ornament at full weight. Every working surface after it uses 'quiet'
- * ("ceremony at the threshold, calm at the desk").
+ * The measured sky. Luminance was sampled on a 12x7 grid over the plate; the
+ * region below holds 0.89-0.94 relative luminance — indistinguishable from
+ * --paper — and is the only place text may sit on the artwork
+ * (design-system.md §4).
+ *
+ * Exported so the threshold screen positions its content against the same
+ * numbers this component uses, rather than a hand-tuned guess that drifts.
  */
-export function MarginPlates({ strength = 'quiet' }: { strength?: PlateStrength }) {
-  const opacity = strength === 'full' ? 'opacity-100' : 'opacity-[0.28]';
+export const SKY = { left: 0.29, right: 0.71, top: 0, bottom: 0.46 } as const;
 
+export function HeroPlate() {
   return (
     <div
       aria-hidden="true"
-      // inset-0, not inset-y-0: a fixed box with only vertical insets collapses
-      // to zero width, and the right-hand plate then anchors to x=0 and renders
-      // off the left edge of the screen.
-      //
-      // Shown from 1460px, not 1280px. The rule is "ornament never sits behind
-      // text, at any opacity" and the plates need ~180px each to read as a
-      // plate rather than a smudge: 1100 (column) + 2x180 = 1460. Below that
-      // the ornament is removed entirely, which the design system asks for
-      // anyway below 1280 — this just sets the floor where the geometry
-      // actually works instead of where it merely looks close.
-      className={`pointer-events-none fixed inset-0 z-0 hidden select-none min-[1460px]:block ${opacity}`}
-    >
-      <Plate side="left" />
-      <Plate side="right" />
-    </div>
+      className="plate-img plate-full pointer-events-none absolute inset-0 select-none"
+    />
   );
 }
 
-function Plate({ side }: { side: 'left' | 'right' }) {
-  // The inner edge fades to nothing and the top/bottom taper, so the plate
-  // meets the paper without a seam. Masks are doubled and intersected: one
-  // horizontal, one vertical.
-  const fadeInward =
-    side === 'left'
-      ? 'linear-gradient(to right, #000 42%, transparent 100%)'
-      : 'linear-gradient(to left, #000 42%, transparent 100%)';
-  const fadeEnds = 'linear-gradient(to bottom, transparent 0%, #000 14%, #000 84%, transparent 100%)';
-
+/**
+ * The plate's ground edge, closing the foot of a working screen.
+ *
+ * Rendered in the document flow AFTER the content, never fixed behind it. A
+ * fixed band would put the engraving under scrolling text, which is the one
+ * thing §7 rule 2 forbids outright — and it is exactly what the 11pm test is
+ * there to catch.
+ */
+export function HorizonBand({ className = '' }: { className?: string }) {
   return (
     <div
-      // The background-image pair (webp declaration, then a typed image-set that
-      // overrides it where supported) lives in globals.css, because a React
-      // style object cannot express the same property twice.
-      className={`plate plate--${side} absolute inset-y-0 ${side === 'left' ? 'left-0' : 'right-0'}`}
-      style={{
-        // Exactly the margin outside the 1100px column — never a fixed floor,
-        // which would push ornament under the text on narrower viewports. This
-        // makes the overlap structurally impossible rather than merely unlikely.
-        width: 'calc((100vw - 1100px) / 2)',
-        backgroundPosition: `${side} center`,
-        WebkitMaskImage: `${fadeInward}, ${fadeEnds}`,
-        maskImage: `${fadeInward}, ${fadeEnds}`,
-        WebkitMaskComposite: 'source-in',
-        maskComposite: 'intersect',
-      }}
+      aria-hidden="true"
+      className={`plate-img plate-horizon pointer-events-none relative h-[34vh] max-h-[300px] w-full select-none opacity-[0.5] ${className}`}
     />
   );
 }
@@ -87,7 +62,7 @@ export function RuleWithFleuron({ className = '' }: { className?: string }) {
   return (
     <div className={`flex items-center gap-4 ${className}`} aria-hidden="true">
       <span className="h-px flex-1 bg-[var(--rule-hair)]" />
-      <Fleuron className="shrink-0 text-cobalt/45" />
+      <Fleuron className="shrink-0 text-indigo/45" />
       <span className="h-px flex-1 bg-[var(--rule-hair)]" />
     </div>
   );

@@ -119,7 +119,7 @@ export function EditConsole({ docId }: { docId: string }) {
         </div>
         <Link
           href={`/documents/${docId}/export`}
-          className="rounded border border-cobalt/40 px-5 py-2.5 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06]"
+          className="rounded border border-indigo/40 px-5 py-2.5 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06]"
         >
           Export →
         </Link>
@@ -128,8 +128,8 @@ export function EditConsole({ docId }: { docId: string }) {
       {/* Anchors first when any are undecided: an unplaced citation blocks a
           clean export and is the most consequential thing on the screen. */}
       {undecidedAnchors > 0 && (
-        <div className="mt-10 rounded border border-sanguine/40 bg-sanguine/[0.05] px-5 py-4">
-          <p className="inline-flex items-center gap-2 font-ui text-xs text-sanguine">
+        <div className="mt-10 rounded border border-madder/40 bg-madder/[0.05] px-5 py-4">
+          <p className="inline-flex items-center gap-2 font-ui text-xs text-madder">
             <Seal kind="dangling" size={16} />
             {undecidedAnchors} citation{undecidedAnchors === 1 ? '' : 's'} below need
             {undecidedAnchors === 1 ? 's' : ''} a decision before this edit is complete.
@@ -141,7 +141,7 @@ export function EditConsole({ docId }: { docId: string }) {
 
       {phase === 'planning' && (
         <div className="mt-16 flex flex-col items-center py-12 text-center" aria-live="polite">
-          <Fleuron size={20} className="text-cobalt/40" />
+          <Fleuron size={20} className="text-indigo/40" />
           <p className="mt-5 font-display text-xl text-primary">Planning your edit</p>
           <p className="measure mt-2 text-xs leading-relaxed text-secondary">
             The planner is turning your instruction into typed operations. Every one of them is
@@ -151,8 +151,8 @@ export function EditConsole({ docId }: { docId: string }) {
       )}
 
       {phase === 'failed' && (
-        <Plate accent="sanguine" className="mt-12 px-8 py-8">
-          <span className="inline-flex items-center gap-3 font-ui text-xs font-medium text-sanguine">
+        <Plate accent="madder" className="mt-12 px-8 py-8">
+          <span className="inline-flex items-center gap-3 font-ui text-xs font-medium text-madder">
             <Seal kind="broken" size={18} />
             The command could not be planned
           </span>
@@ -259,12 +259,12 @@ export function EditConsole({ docId }: { docId: string }) {
             }}
             placeholder="Tell Answerthat what to change…"
             disabled={phase === 'planning'}
-            className="min-w-0 flex-1 resize-y rounded border border-[var(--rule-strong)] bg-plate px-4 py-3 font-body text-base leading-relaxed text-primary placeholder:text-muted focus:border-cobalt disabled:opacity-60"
+            className="min-w-0 flex-1 resize-y rounded border border-[var(--rule-strong)] bg-plate px-4 py-3 font-body text-base leading-relaxed text-primary placeholder:text-muted focus:border-indigo disabled:opacity-60"
           />
           <button
             type="submit"
             disabled={phase === 'planning' || command.trim() === ''}
-            className="h-fit self-end rounded border border-cobalt/45 px-6 py-3 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06] disabled:opacity-40"
+            className="h-fit self-end rounded border border-indigo/45 px-6 py-3 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06] disabled:opacity-40"
           >
             {phase === 'planning' ? 'Planning…' : 'Propose changes'}
           </button>

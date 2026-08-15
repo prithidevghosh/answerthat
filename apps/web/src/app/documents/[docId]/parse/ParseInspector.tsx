@@ -65,7 +65,7 @@ export function ParseInspector({
         </div>
         <Link
           href={`/documents/${docId}/review`}
-          className="rounded border border-cobalt/40 px-5 py-2.5 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06]"
+          className="rounded border border-indigo/40 px-5 py-2.5 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06]"
         >
           Start review →
         </Link>
@@ -102,7 +102,7 @@ export function ParseInspector({
               <button
                 type="button"
                 onClick={() => setFilter('all')}
-                className="font-ui text-2xs text-cobalt underline decoration-cobalt/30 underline-offset-2 hover:decoration-cobalt"
+                className="font-ui text-2xs text-indigo underline decoration-indigo/30 underline-offset-2 hover:decoration-indigo"
               >
                 Showing {TIER_COUNT_LABEL[filter]} only — show all
               </button>
@@ -173,17 +173,17 @@ function Chip({
 }: {
   label: string;
   active: boolean;
-  ink?: 'cobalt' | 'sepia' | 'sanguine' | 'verdigris';
+  ink?: 'indigo' | 'sepia' | 'madder' | 'verdigris';
   onClick: () => void;
 }) {
   // Full class strings per ink: Tailwind scans literals, and `currentColor`
   // takes no alpha modifier, so both halves must be spelled out.
   const tone =
-    ink === 'sanguine'
+    ink === 'madder'
       ? {
-          base: 'text-sanguine border-sanguine/35',
-          on: 'bg-sanguine/[0.09]',
-          off: 'hover:bg-sanguine/[0.05]',
+          base: 'text-madder border-madder/35',
+          on: 'bg-madder/[0.09]',
+          off: 'hover:bg-madder/[0.05]',
         }
       : ink === 'sepia'
         ? {
@@ -192,9 +192,9 @@ function Chip({
             off: 'hover:bg-sepia/[0.05]',
           }
         : {
-            base: 'text-cobalt border-cobalt/35',
-            on: 'bg-cobalt/[0.09]',
-            off: 'hover:bg-cobalt/[0.05]',
+            base: 'text-indigo border-indigo/35',
+            on: 'bg-indigo/[0.09]',
+            off: 'hover:bg-indigo/[0.05]',
           };
   return (
     <button

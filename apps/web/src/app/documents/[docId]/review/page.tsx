@@ -1,4 +1,3 @@
-import { MarginPlates } from '@/components/Ornament';
 import { FixtureBanner } from '@/components/FixtureBanner';
 import { ConfigurationError } from '@/components/ConfigurationError';
 import { WorkbenchHeader } from '@/components/WorkbenchHeader';
@@ -43,7 +42,6 @@ export default async function ReviewPage({ params }: { params: Promise<{ docId: 
   return (
     <>
       <FixtureBanner />
-      <MarginPlates strength="quiet" />
       <WorkbenchHeader
         docId={docId}
         current="review"

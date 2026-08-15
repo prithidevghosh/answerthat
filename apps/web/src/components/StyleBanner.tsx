@@ -82,7 +82,7 @@ export function StyleBanner({
         </div>
 
         {error && (
-          <p role="alert" className="mt-3 font-ui text-2xs text-sanguine">
+          <p role="alert" className="mt-3 font-ui text-2xs text-madder">
             Could not save that choice: {error}
           </p>
         )}
@@ -92,8 +92,8 @@ export function StyleBanner({
 
   if (!style.style_id) {
     return (
-      <Plate accent="sanguine" className="px-6 py-6">
-        <span className="inline-flex items-center gap-2 font-ui text-xs font-medium text-sanguine">
+      <Plate accent="madder" className="px-6 py-6">
+        <span className="inline-flex items-center gap-2 font-ui text-xs font-medium text-madder">
           <Seal kind="broken" size={17} />
           No citation style could be detected
         </span>
@@ -108,7 +108,7 @@ export function StyleBanner({
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-ui text-2xs text-muted">
-      <span className="inline-flex items-center gap-2 text-cobalt">
+      <span className="inline-flex items-center gap-2 text-indigo">
         <Seal kind="filled" size={14} />
         Rendered in {styleName(style.style_id)}
       </span>

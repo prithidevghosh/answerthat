@@ -30,7 +30,7 @@ export function Plate({
       } ${className}`}
       {...rest}
     >
-      {fleurons && <CornerFleurons className="text-cobalt" />}
+      {fleurons && <CornerFleurons className="text-indigo" />}
       {children}
     </Tag>
   );

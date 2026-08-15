@@ -15,7 +15,7 @@ export interface AnchorEntry {
 const FATE: Record<AnchorFate, { label: string; tone: string; seal: 'filled' | 'open' | 'dangling' }> = {
   persisted: {
     label: 'kept',
-    tone: 'text-cobalt border-cobalt/35 bg-cobalt/[0.04]',
+    tone: 'text-indigo border-indigo/35 bg-indigo/[0.04]',
     seal: 'filled',
   },
   added: {
@@ -25,7 +25,7 @@ const FATE: Record<AnchorFate, { label: string; tone: string; seal: 'filled' | '
   },
   orphaned: {
     label: 'needs a decision',
-    tone: 'text-sanguine border-sanguine/40 bg-sanguine/[0.05]',
+    tone: 'text-madder border-madder/40 bg-madder/[0.05]',
     seal: 'dangling',
   },
 };
@@ -93,7 +93,7 @@ export function AnchorSeals({
         )}
         {added > 0 && orphaned > 0 && ' · '}
         {orphaned > 0 && (
-          <span className="text-sanguine">
+          <span className="text-madder">
             {orphaned} could not be reattached — your decision below
           </span>
         )}

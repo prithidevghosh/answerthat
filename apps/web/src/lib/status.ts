@@ -10,7 +10,7 @@
  */
 import type { ConfidenceTier, VerificationLabel, AbstractSource } from './contracts';
 
-export type Ink = 'cobalt' | 'sepia' | 'sanguine' | 'verdigris';
+export type Ink = 'indigo' | 'sepia' | 'madder' | 'verdigris';
 
 export type SealKind =
   | 'filled' //   resolved — a complete impression
@@ -32,7 +32,7 @@ export interface StatusDescriptor {
 
 export const TIER_STATUS: Record<ConfidenceTier, StatusDescriptor> = {
   resolved: {
-    ink: 'cobalt',
+    ink: 'indigo',
     label: 'Resolved',
     seal: 'filled',
     note: 'Matched to a record in an external index. The metadata below comes from that record, not from our parse.',
@@ -50,13 +50,13 @@ export const TIER_STATUS: Record<ConfidenceTier, StatusDescriptor> = {
     note: 'We are not confident in the fields below, and no external record agreed with them strongly enough to replace them. Check them against the raw string.',
   },
   quarantined: {
-    ink: 'sanguine',
+    ink: 'madder',
     label: 'Could not parse',
     seal: 'broken',
     note: 'We could not segment this reference into fields at all. The raw string is shown in full, exactly as it appeared in your document.',
   },
   orphan_marker: {
-    ink: 'sanguine',
+    ink: 'madder',
     label: 'Marker with no reference',
     seal: 'dangling',
     note: 'Your text cites this marker, but no matching entry exists in the bibliography.',
@@ -65,7 +65,7 @@ export const TIER_STATUS: Record<ConfidenceTier, StatusDescriptor> = {
 
 export const VERIFICATION_STATUS: Record<VerificationLabel, StatusDescriptor> = {
   supports: {
-    ink: 'cobalt',
+    ink: 'indigo',
     label: 'Supports',
     seal: 'quote',
     note: 'The quoted passage from the abstract supports this claim.',
@@ -83,7 +83,7 @@ export const VERIFICATION_STATUS: Record<VerificationLabel, StatusDescriptor> = 
     note: 'The source is real and readable, but its abstract does not speak to this claim.',
   },
   contradicts: {
-    ink: 'sanguine',
+    ink: 'madder',
     label: 'Contradicts',
     seal: 'quote-inverted',
     note: 'The quoted passage runs against this claim. Worth reading before you rely on it.',
@@ -105,24 +105,24 @@ export const ABSTRACT_SOURCE_LABEL: Record<AbstractSource, string> = {
 
 /** Tailwind text-colour class per ink. Kept here so no component guesses. */
 export const INK_TEXT: Record<Ink, string> = {
-  cobalt: 'text-cobalt',
+  indigo: 'text-indigo',
   sepia: 'text-sepia',
-  sanguine: 'text-sanguine',
+  madder: 'text-madder',
   verdigris: 'text-verdigris',
 };
 
 /** Hairline rule colour per ink, for card edges and quote blocks. */
 export const INK_BORDER: Record<Ink, string> = {
-  cobalt: 'border-cobalt/35',
+  indigo: 'border-indigo/35',
   sepia: 'border-sepia/40',
-  sanguine: 'border-sanguine/40',
+  madder: 'border-madder/40',
   verdigris: 'border-verdigris/40',
 };
 
 export const INK_BG: Record<Ink, string> = {
-  cobalt: 'bg-cobalt/[0.04]',
+  indigo: 'bg-indigo/[0.04]',
   sepia: 'bg-sepia/[0.05]',
-  sanguine: 'bg-sanguine/[0.05]',
+  madder: 'bg-madder/[0.05]',
   verdigris: 'bg-verdigris/[0.05]',
 };
 

@@ -55,7 +55,7 @@ export function CountStrip({
                 aria-pressed={isActive}
                 className={`group flex items-baseline gap-2.5 rounded px-1 transition-colors duration-ink ease-ink ${
                   INK_TEXT[status.ink]
-                } ${isActive ? 'bg-cobalt/[0.07]' : 'hover:bg-cobalt/[0.04]'}`}
+                } ${isActive ? 'bg-indigo/[0.07]' : 'hover:bg-indigo/[0.04]'}`}
               >
                 <span className="font-display text-3xl leading-none tabular-nums">
                   {counts[tier]}
@@ -92,7 +92,7 @@ export function CountStrip({
           </>
         ) : (
           // If this ever renders, the pipeline lost a reference. Say so.
-          <span className="text-sanguine">
+          <span className="text-madder">
             Counts do not reconcile: {tallied} accounted for against {counts.total_detected}{' '}
             detected. {Math.abs(counts.total_detected - tallied)} reference
             {Math.abs(counts.total_detected - tallied) === 1 ? '' : 's'} unaccounted for. This is a

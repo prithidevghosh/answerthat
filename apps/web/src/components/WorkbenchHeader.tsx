@@ -31,7 +31,7 @@ export function WorkbenchHeader({
         <div className="min-w-0">
           <Link
             href="/"
-            className="font-display text-lg text-primary transition-colors duration-ink hover:text-cobalt"
+            className="font-display text-lg text-primary transition-colors duration-ink hover:text-indigo"
           >
             Answerthat
           </Link>
@@ -57,8 +57,8 @@ export function WorkbenchHeader({
                     aria-current={isCurrent ? 'step' : undefined}
                     className={`rounded px-3 py-1.5 font-ui text-xs transition-colors duration-ink ease-ink ${
                       isCurrent
-                        ? 'bg-cobalt/[0.08] text-cobalt'
-                        : 'text-secondary hover:bg-cobalt/[0.04] hover:text-cobalt'
+                        ? 'bg-indigo/[0.08] text-indigo'
+                        : 'text-secondary hover:bg-indigo/[0.04] hover:text-indigo'
                     }`}
                   >
                     {step.label}

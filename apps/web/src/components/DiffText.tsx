@@ -9,7 +9,7 @@ import { useMemo } from 'react';
  * paragraph against another, so an O(n*m) LCS over words is both fast enough
  * and easier to trust than pulling in a diff library.
  *
- * Removed text is sanguine strikethrough, added text is verdigris, per
+ * Removed text is madder strikethrough, added text is verdigris, per
  * design-system.md §5.
  */
 type Piece = { kind: 'same' | 'added' | 'removed'; text: string };
@@ -72,7 +72,7 @@ export function DiffText({ before, after }: { before: string; after: string }) {
           return (
             <del
               key={idx}
-              className="bg-sanguine/[0.07] text-sanguine decoration-sanguine/60 decoration-1"
+              className="bg-madder/[0.07] text-madder decoration-madder/60 decoration-1"
             >
               {p.text}
             </del>

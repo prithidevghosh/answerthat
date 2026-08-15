@@ -144,11 +144,14 @@ not copies — plus `GrobidUnavailable`, `ExportFailure`, `SourceStoreViolation`
 `app.core.db` gives you `Base`, `JSONB`, `session_scope()`, `get_session()` (FastAPI dep),
 `utcnow()`, `create_all()`. Hang every ORM table off that `Base` or `create_all()` won't see it.
 
-2026-08-15 · B1 · `ANTHROPIC_API_KEY` is deliberately NOT a startup-abort key
-HR-2 names exactly two keys, so `Settings` requires only those. But absence of the Anthropic key
-must not silently skip the repair tier / planner / verifier — that's HR-3. Whoever owns each of
-those call sites raises `MissingAPIKeyError` at the point of use. Do not add an "if no key, skip"
-branch.
+~~2026-08-15 · B1 · `ANTHROPIC_API_KEY` is deliberately NOT a startup-abort key~~
+~~HR-2 names exactly two keys, so `Settings` requires only those...~~
+**Corrected 2026-08-16 · B1** — half of this still holds, half was overtaken. `Settings` still
+requires only the two keys HR-2 names, so `app.core.config` does not abort on a missing Anthropic
+key. But B2/B3's service constructors *do* raise on it at `build_services()`, which means in
+practice **the api container will not start without `ANTHROPIC_API_KEY` either**. That is the right
+call and consistent with HR-3 — a review that ran with no verifier reports no findings, which is
+indistinguishable from a clean paper. Practical upshot: `.env` needs all four values, not two.
 
 2026-08-15 · B1 · Config carries the ADR thresholds; don't re-hardcode them
 `arbiter_accept_threshold=0.85` (ADR-001), `style_ambiguity_margin=0.05` (ADR-011),
@@ -293,6 +296,33 @@ no longer reads `pnpm.onlyBuiltDependencies` from package.json, and only reads
 `pnpm-workspace.yaml` **if that file declares a `packages:` key** — without it, `pnpm install`
 exits 1 on the ignored-builds warning, which breaks `pnpm dev`.
 
+2026-08-16 · F1 · The design direction was wrong; the plate is the stage, not a margin texture
+Corrected after review. The first build cropped `hero-plate.svg` into two faded edge bands and
+threw the middle away — which hid ~70% of the artwork. **The plate already contains its own empty
+centre**: a luminous sky (measured 0.89–0.94 luminance, x 29–71% / y 0–46%) framed by scholars
+turned inward toward it. That sky is where the upload target goes. design-system.md §1 is rewritten
+around this; the revision note at the top of that file explains what changed and why.
+
+2026-08-16 · F1 · Sample the palette from the artwork, don't invent one alongside it
+The old tokens (cobalt #1B3A6B on #F7F3EA) were near-misses — more purple and more yellow than the
+plate. k-means over the engraving gives its real ladder: ivory #EEEBE7 and indigo #162436 → #1E3659
+→ #304A72 → #475A78 → #556D94 → #7589AA → #919FB6 → #BCC3CE. The interface now uses those. Status
+inks (sepia/madder/verdigris) are the only invented colours and are pitched to the same value depth
+so they read as further plates from the same press. **Every ink was contrast-checked against paper,
+plate AND paper-deep** — `--text-muted` failed AA on paper-deep at three separate candidate values
+before landing on #525F75.
+
+2026-08-16 · F1 · Verify text-on-image contrast by compositing, not by eye
+For text over artwork, compute it: draw the image to a canvas with the same cover/position maths the
+CSS uses, then sample worst-pixel luminance under each element's bounding box. On the threshold
+screen this gives 14.72 / 6.92 / 5.73 for wordmark / tagline / helper, with worst == average, i.e.
+all three sit on completely flat sky. A layout that "looks fine" is not evidence.
+
+2026-08-16 · F1 · Don't run `pnpm build` while `pnpm dev` is running — it corrupts .next
+The production build overwrites the dev server's chunks and every route then 500s with
+`MODULE_NOT_FOUND: ./vendor-chunks/...`. Looks like a broken import; isn't. Fix: stop dev,
+`rm -rf .next`, restart. Bit me twice.
+
 2026-08-15 · B2 · Structured outputs need `additionalProperties: false` on **every** object
 `output_config={"format": {"type": "json_schema", "schema": …}}` rejects a schema whose objects
 omit it or whose `required` list is partial — a 400 at request time, not a looser schema. Pydantic's
@@ -395,11 +425,107 @@ one bad edit poisons the next request's reads. `app/api/adapters.py` holds the *
 
 ---
 
+2026-08-16 · B1 · httpx: `data=` as a list of tuples + `files=` breaks async multipart
+`await client.post(url, files=..., data=[("teiCoordinates","ref"), ("teiCoordinates","p")])` raises
+**"Attempted to send an sync request with an AsyncClient instance"** — httpx builds a sync-only
+stream for that combination. Unit tests with a stubbed client never see it; it only appears against
+a live server. Use a dict with a **list value** — `{"teiCoordinates": ["ref","p"]}` — which puts the
+same repeated fields on the wire and sends fine.
+
+2026-08-16 · B1 · What a real arXiv PDF actually produces (1706.03762, 2.2MB, 15 pages)
+GROBID → 117KB TEI in ~40s. 26 sections, 71 paragraphs, 195 spans (sentences), 58 citation anchors,
+40 references, 135 nodes with PDF coordinates, 0 orphan markers. 39/40 parsed, 1 quarantined,
+17 carry a DOI. Useful calibration: **GROBID puts the arXiv licence banner into `<titleStmt>`** —
+the extracted title starts "Provided proper attribution is provided, Google hereby grants…". Not a
+mapping bug, but the parse inspector should let a user correct the title.
+
+2026-08-16 · B1 · Style detection on a real bibliography returns `ambiguous`, and that is correct
+Distances came out IEEE 0.461 / Nature 0.495 / Vancouver 0.495 / ACM 0.550 — top two inside the
+0.05 margin, so the answer is "you pick" (ADR-011). Absolute distances sit near 0.45 even for the
+winner because raw strings carry full author lists ("Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey
+E Hinton") while IEEE renders initials. **Read the score as a ranking, not as a goodness-of-fit** —
+a 0.46 winner is normal, and a threshold on the absolute value would reject every real paper.
+
+2026-08-16 · B1 · The GROBID image has no curl, wget or python — healthcheck it with bash /dev/tcp
+`test: ["CMD-SHELL", "curl -fsS http://localhost:8070/api/isalive"]` marks the container unhealthy
+forever while it happily parses PDFs, and `depends_on: condition: service_healthy` then blocks the
+api from ever starting. Two traps in the fix: `/dev/tcp` is a **bash builtin**, and `CMD-SHELL`
+runs `/bin/sh` (dash), which fails with "Directory nonexistent". Use `CMD` + `bash -c`. Working
+probe is in `docker-compose.yml`.
+
+2026-08-16 · B1 · Host ports 5432/6379 are often already taken — compose ports are env-overridable
+`docker compose up` failed with "Bind for 127.0.0.1:5432 failed: port is already allocated" on a
+machine with a local postgres. All five published ports now read `${POSTGRES_PORT:-5432}` etc., so
+you set `POSTGRES_PORT=5433` in `.env` instead of editing the compose file. Services still reach
+each other on the compose network at the standard ports regardless.
+
+---
+
 ## 5. Interface requests & blockers
 
 > When you need something from another agent's domain, write it here and code against the Appendix A
 > contract in `goal.md` meanwhile. **Never modify another agent's files.**
 > Format: `[OPEN|RESOLVED] <from> → <to> · <what you need> · <why> · <date>`
+
+[RESOLVED] B1 → B3 · Both factories you asked for are live · `app.parsing.pipeline:get_ingest_pipeline(settings, *, grobid=None, arbiter=None, segmenter=None, store_factory=None, allow_unreconciled=False)`
+returns an `IngestPipeline` with exactly your names: `enqueue(doc_id, filename, payload) -> job_id`,
+`status(doc_id) -> dict | None` (`state` ∈ queued|running|complete|failed, plus `stage`, `progress`,
+`version`, `error`, `elapsed_s`), `parse_report(doc_id) -> {references, orphan_markers, counts,
+reconciliations, style_error}` and `record_failure(doc_id, message)`. Also `result(doc_id)` for the
+full `IngestResult` if you want the IR without re-reading the store.
+`app.parsing.style:get_style_service(settings)` has `detect(doc_id)` and `select(doc_id, style_id)`
+returning `{style_id, score, similarity, ambiguous, chosen_by_user, margin, compared, reason,
+marker_family, candidates[], shortlist[]}`.
+**Three things to know.** (1) `status()` returns `None` for a document never ingested, so you can
+answer 404 rather than reporting "queued". (2) `parse_report()` **raises `ParseFailure`** while a
+job is still running or if it failed — it never returns an empty report, because an empty report
+renders as "this paper has no references". (3) You must pass `arbiter=`; constructing the pipeline
+without one raises `ConfigurationError` unless you also pass `allow_unreconciled=True`. Building
+the arbiter needs B2's adapters, which is your wiring layer, not mine — `ArbiterProviders(crossref=…,
+semantic_scholar=…, openalex=…)` from `app.parsing.arbiter`. · 2026-08-16
+
+[RESOLVED] B1 → B3 · `app/main.py` question answered: use the factory, no shim added ·
+`memory.md` §2 and `services/api/Dockerfile` now both say `uvicorn --factory app.api.main:asgi`.
+I did not add `app/main.py` — two entry points to the same app is a worse outcome than one correct
+one. Nothing wraps `build_services()`, so `MissingAPIKeyError` still stops the process; verified by
+running `asgi()` with both keys unset and watching it abort with the named-key message. · 2026-08-16
+
+[OPEN] B1 → B2 · `crossref.batch_hydrate(dois)` must accept **bare DOIs** · The arbiter collects
+every DOI in a bibliography and hydrates them in one call rather than looping (goal.md §7). It
+passes lowercased bare DOIs — `10.1145/3530811`, no `https://doi.org/` and no `DOI:` prefix — and
+maps results back by `record.csl["DOI"]`, so **returned SourceRecords must carry `DOI` in their
+CSL**. Noted that your Crossref `batch_hydrate` loops internally; that is fine, it is behind your
+limiter. I also now prefer `CrossrefProvider.resolve_doi(doi)` when the adapter exposes it, falling
+back to `search_works(doi, limit=1)` for protocol-only providers. · 2026-08-16
+
+[OPEN] B1 → B2 · One behavioural difference between your adapters and my test stubs, please confirm ·
+You wrote that a 404 is `None`, "never an exception and never an empty list". The arbiter depends on
+being able to tell **"searched, found nothing"** from **"could not search"** — the first leaves a
+reference honestly unresolved, the second sets `Reconciliation.provider_errors` and
+`fully_checked=False` so the UI can say the lookup did not complete (HR-3). So: a genuine miss →
+`None`/`[]` ✅, but a rate limit, timeout or 5xx must **raise**, not return empty. Confirm that is
+what the adapters do. · 2026-08-16
+
+[OPEN] B1 → B3 · An anchor with `source_ids == []` is legitimate and must not be a kernel REJECT ·
+Any reference the arbiter did not resolve leaves its in-text anchors with an empty `source_ids`
+list — on a real paper with no API keys that is *every* anchor. REJECT rule 1 is "every source_id
+in the change exists in `source_store`", which an empty list satisfies vacuously. The anchor→
+reference link for those lives in `ParsedDocument.anchor_to_ref`, not on the anchor. · 2026-08-16
+
+[OPEN] B1 → B3 · Export refuses to invent a style, and real papers do come back `ambiguous` ·
+`export_latex()` raises `ExportFailure` when neither `style_id=` nor `document.metadata.style_id`
+is set. When detection is ambiguous, `metadata.style_id` is **None by design** and
+`style_ambiguous=True`. This is not a rare branch: on arXiv 1706.03762 the top two styles landed
+0.035 apart, so the export path must route the user through `POST …/style` rather than falling
+back. `get_style_service().select(doc_id, style_id)` writes the choice onto the document metadata
+for you. · 2026-08-16
+
+[OPEN] B1 → F1 · `packages/csl-styles/` is populated; six styles, ids without the `.csl` ·
+`apa`, `ieee`, `acm` (file `acm-sig-proceedings.csl`), `nature`, `chicago-author-date`,
+`vancouver`. Note **`acm`'s style id does not match its filename** — the API speaks style ids, so
+map through `app.export.styles.SHORTLIST` rather than assuming `{style_id}.csl`. Your
+`sync-csl-styles.mjs` hashing approach is exactly right; nothing in `packages/` is written by the
+backend at runtime, so the hashes are stable. · 2026-08-16
 
 [OPEN] B2 → B3 · `SourceReader.get`/`has` need an `await store.warm([source_ids])` before use ·
 The store is async Postgres behind the sync signature Appendix A specifies. Sync reads answer from

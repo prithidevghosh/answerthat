@@ -40,10 +40,10 @@ export function OrphanedAnchorCard({
   });
 
   return (
-    <Plate as="li" accent={resolved ? 'verdigris' : 'sanguine'} className="px-6 py-6 sm:px-8">
+    <Plate as="li" accent={resolved ? 'verdigris' : 'madder'} className="px-6 py-6 sm:px-8">
       <span
         className={`inline-flex items-center gap-2 font-ui text-xs font-medium ${
-          resolved ? 'text-verdigris' : 'text-sanguine'
+          resolved ? 'text-verdigris' : 'text-madder'
         }`}
       >
         <Seal kind={resolved ? 'filled' : 'dangling'} size={17} />
@@ -112,7 +112,7 @@ export function OrphanedAnchorCard({
               type="button"
               disabled={busy}
               onClick={() => onResolve({ decision: 'keep_here' })}
-              className="rounded border border-cobalt/45 px-5 py-2 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06] disabled:opacity-50"
+              className="rounded border border-indigo/45 px-5 py-2 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06] disabled:opacity-50"
             >
               Keep here
             </button>
@@ -127,7 +127,7 @@ export function OrphanedAnchorCard({
                     target_span_id: decision.best_candidate!.span_id,
                   })
                 }
-                className="rounded border border-cobalt/45 px-5 py-2 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06] disabled:opacity-50"
+                className="rounded border border-indigo/45 px-5 py-2 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06] disabled:opacity-50"
               >
                 Move to closest match
               </button>
@@ -139,15 +139,15 @@ export function OrphanedAnchorCard({
               asks twice and names the consequence.
             */}
             {confirmRemove ? (
-              <span className="inline-flex flex-wrap items-center gap-3 rounded border border-sanguine/45 bg-sanguine/[0.05] px-4 py-2">
-                <span className="font-ui text-2xs text-sanguine">
+              <span className="inline-flex flex-wrap items-center gap-3 rounded border border-madder/45 bg-madder/[0.05] px-4 py-2">
+                <span className="font-ui text-2xs text-madder">
                   Remove this citation from the document?
                 </span>
                 <button
                   type="button"
                   disabled={busy}
                   onClick={() => onResolve({ decision: 'remove' })}
-                  className="rounded border border-sanguine/50 px-3 py-1 font-ui text-2xs text-sanguine hover:bg-sanguine/[0.09] disabled:opacity-50"
+                  className="rounded border border-madder/50 px-3 py-1 font-ui text-2xs text-madder hover:bg-madder/[0.09] disabled:opacity-50"
                 >
                   Yes, remove
                 </button>
@@ -164,7 +164,7 @@ export function OrphanedAnchorCard({
                 type="button"
                 disabled={busy}
                 onClick={() => setConfirmRemove(true)}
-                className="rounded border border-sanguine/45 px-5 py-2 font-ui text-xs text-sanguine transition-colors duration-ink ease-ink hover:bg-sanguine/[0.07] disabled:opacity-50"
+                className="rounded border border-madder/45 px-5 py-2 font-ui text-xs text-madder transition-colors duration-ink ease-ink hover:bg-madder/[0.07] disabled:opacity-50"
               >
                 Remove
               </button>

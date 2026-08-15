@@ -1,13 +1,14 @@
+import { HorizonBand } from '@/components/Ornament';
 import { FixtureBanner } from '@/components/FixtureBanner';
 import { ConfigurationError } from '@/components/ConfigurationError';
 import { WorkbenchHeader } from '@/components/WorkbenchHeader';
 import { LoadFailure } from '@/components/LoadFailure';
 import { getClient } from '@/lib/api/client';
-import { EditConsole } from './EditConsole';
+import { ExportPanel } from './ExportPanel';
 
 export const dynamic = 'force-dynamic';
 
-export default async function EditPage({ params }: { params: Promise<{ docId: string }> }) {
+export default async function ExportPage({ params }: { params: Promise<{ docId: string }> }) {
   const { docId } = await params;
   const client = getClient();
 
@@ -21,15 +22,19 @@ export default async function EditPage({ params }: { params: Promise<{ docId: st
     );
   }
 
+  let manifest;
   let parse;
   try {
-    parse = await client.getParseResult(docId);
+    [manifest, parse] = await Promise.all([
+      client.getExportManifest(docId),
+      client.getParseResult(docId),
+    ]);
   } catch (err) {
     return (
       <>
         <FixtureBanner />
         <LoadFailure
-          what="this document"
+          what="the export"
           docId={docId}
           detail={err instanceof Error ? err.message : String(err)}
         />
@@ -42,11 +47,13 @@ export default async function EditPage({ params }: { params: Promise<{ docId: st
       <FixtureBanner />
       <WorkbenchHeader
         docId={docId}
-        current="edit"
+        current="export"
         title={parse.document.metadata.title}
         version={parse.document.version}
       />
-      <EditConsole docId={docId} />
+      <ExportPanel docId={docId} manifest={manifest} />
+      {/* The plate returns only at the foot, after the content — never behind it. */}
+      <HorizonBand />
     </>
   );
 }

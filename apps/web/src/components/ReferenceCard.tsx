@@ -82,7 +82,7 @@ export function ReferenceCard({
             href={source.provenance.external_url}
             target="_blank"
             rel="noreferrer noopener"
-            className="font-ui text-2xs text-cobalt underline decoration-cobalt/30 underline-offset-2 hover:decoration-cobalt"
+            className="font-ui text-2xs text-indigo underline decoration-indigo/30 underline-offset-2 hover:decoration-indigo"
           >
             View on {PROVIDER_NAME[source.provenance.provider]} ↗
           </a>
@@ -111,7 +111,7 @@ export function ReferenceCard({
           type="button"
           onClick={() => setShowRaw((v) => !v)}
           aria-expanded={showRaw}
-          className="mt-4 font-ui text-2xs text-cobalt underline decoration-cobalt/30 underline-offset-2 hover:decoration-cobalt"
+          className="mt-4 font-ui text-2xs text-indigo underline decoration-indigo/30 underline-offset-2 hover:decoration-indigo"
         >
           {showRaw ? 'Hide raw string' : 'Show raw string'}
         </button>

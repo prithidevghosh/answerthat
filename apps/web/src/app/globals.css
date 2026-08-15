@@ -7,47 +7,66 @@
    --------------------------------------------------------------------------- */
 :root {
   /*
-    Each token is declared twice, on purpose.
+    Every colour here is sampled from hero-plate.svg — the plate is the source
+    of truth for this system (design-system.md §2). It is a single-ink
+    engraving, so the interface is a single-ink interface: a ladder of indigo on
+    the plate's own warm ivory, plus three status inks pitched to the same value
+    depth so they read as further plates from the same press.
 
-    The hex form is the readable source of truth and is what plain CSS in this
-    file uses. The `-rgb` channel form is what tailwind.config.ts consumes as
-    `rgb(var(--x-rgb) / <alpha-value>)`, because Tailwind v3 cannot apply an
-    opacity modifier to a colour defined as a bare `var(--x)` — `border-sanguine/40`
-    silently emits invalid CSS and falls back, with no build error. The two forms
-    must be kept in step; the values below are paired line by line for that reason.
+    Each token is declared twice, on purpose. The hex form is the readable
+    source of truth and is what plain CSS uses. The `-rgb` channel form is what
+    tailwind.config.ts consumes as `rgb(var(--x-rgb) / <alpha-value>)`, because
+    Tailwind v3 cannot apply an opacity modifier to a bare `var(--x)` —
+    `border-madder/40` silently emits invalid CSS and falls back, with no build
+    error. Keep the two forms in step; they are paired line by line for that.
+
+    Contrast is measured, not eyeballed. Every text ink below clears WCAG AA on
+    paper, plate and paper-deep — the table is in design-system.md §2.
   */
 
-  /* Ground */
-  --paper: #f7f3ea;
-  --paper-rgb: 247 243 234;
-  --paper-deep: #efe8da;
-  --paper-deep-rgb: 239 232 218;
-  --plate: #ffffff;
-  --plate-rgb: 255 255 255;
+  /* Ground — the plate's own paper */
+  --paper: #efece6;
+  --paper-rgb: 239 236 230;
+  --paper-deep: #e4dfd6;
+  --paper-deep-rgb: 228 223 214;
+  --plate: #f7f5f1;
+  --plate-rgb: 247 245 241;
 
-  /* Inks — semantic, not decorative */
-  --ink-cobalt: #1b3a6b;
-  --ink-cobalt-rgb: 27 58 107;
-  --ink-cobalt-lt: #4a6ea0;
-  --ink-cobalt-lt-rgb: 74 110 160;
-  --ink-sepia: #8a6a3d;
-  --ink-sepia-rgb: 138 106 61;
-  --ink-sanguine: #9b3b2f;
-  --ink-sanguine-rgb: 155 59 47;
-  --ink-verdigris: #2f6b5f;
-  --ink-verdigris-rgb: 47 107 95;
+  /* The indigo ladder, sampled from the engraving, light to dark */
+  --ink-palest: #bcc3ce;
+  --ink-palest-rgb: 188 195 206;
+  --ink-pale: #919fb6;
+  --ink-pale-rgb: 145 159 182;
+  --ink-muted: #7589aa;
+  --ink-muted-rgb: 117 137 170;
+  --ink-slate: #556d94;
+  --ink-slate-rgb: 85 109 148;
+  --ink-steel: #475a78;
+  --ink-steel-rgb: 71 90 120;
+  --ink-indigo: #1e3659;
+  --ink-indigo-rgb: 30 54 89;
+  --ink-deepest: #162436;
+  --ink-deepest-rgb: 22 36 54;
+
+  /* Status inks — same press, different plates */
+  --ink-sepia: #6e5330;
+  --ink-sepia-rgb: 110 83 48;
+  --ink-madder: #8a3428;
+  --ink-madder-rgb: 138 52 40;
+  --ink-verdigris: #2a5f53;
+  --ink-verdigris-rgb: 42 95 83;
 
   /* Text */
-  --text-primary: #16202e;
-  --text-primary-rgb: 22 32 46;
-  --text-secondary: #55606e;
-  --text-secondary-rgb: 85 96 110;
-  --text-muted: #8a8f98;
-  --text-muted-rgb: 138 143 152;
+  --text-primary: #141f2e;
+  --text-primary-rgb: 20 31 46;
+  --text-secondary: #44536a;
+  --text-secondary-rgb: 68 83 106;
+  --text-muted: #525f75;
+  --text-muted-rgb: 82 95 117;
 
   /* Lines — engraving hairlines, never heavy borders */
-  --rule-hair: rgba(27, 58, 107, 0.18);
-  --rule-strong: rgba(27, 58, 107, 0.38);
+  --rule-hair: rgba(30, 54, 89, 0.16);
+  --rule-strong: #6f81a0;
 
   /* Laid-paper grain: fractal noise at 4% — design-system.md §4 hard ceiling.
      Generated, not an asset, so it costs no request and stays crisp at any DPR. */
@@ -81,19 +100,19 @@
 
   /* Accessibility beats aesthetics — §7 rule 1. */
   :focus-visible {
-    outline: 2px solid var(--ink-cobalt);
+    outline: 2px solid var(--ink-indigo);
     outline-offset: 2px;
     border-radius: 2px;
   }
 
   /* Never rely on the UA's faint default when a control is reached by keyboard. */
   [data-focus-ring]:focus-visible {
-    outline: 2px solid var(--ink-cobalt);
+    outline: 2px solid var(--ink-indigo);
     outline-offset: 2px;
   }
 
   ::selection {
-    background: rgba(27, 58, 107, 0.16);
+    background: rgba(30, 54, 89, 0.14);
   }
 
   h1,
@@ -146,7 +165,7 @@
     top: 8px;
     z-index: 100;
     background: var(--plate);
-    color: var(--ink-cobalt);
+    color: var(--ink-indigo);
     padding: 12px 16px;
     border: 1px solid var(--rule-strong);
     font-family: var(--font-ui);
@@ -170,33 +189,50 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Margin plates.
+   The plate.
 
-   Deliberately OUTSIDE @layer components: these class names are composed at
-   runtime (`plate--${side}`), so Tailwind's scanner never sees the literal
-   strings and would purge them from a layer. Plain CSS is not purged.
+   Deliberately OUTSIDE @layer components: Tailwind purges unused rules from a
+   layer, and these are applied via composed class names it cannot scan.
 
    background-image is declared twice on purpose — the plain url() is the floor
    for browsers without typed image-set (Safari < 17); the image-set overrides
    it everywhere else and serves AVIF. See scripts/build-plates.md.
    --------------------------------------------------------------------------- */
-.plate {
-  background-size: cover;
+.plate-img {
   background-repeat: no-repeat;
-}
-.plate--left {
-  background-image: url('/ornament/plate-left.webp');
+  background-image: url('/ornament/hero-1800.webp');
   background-image: image-set(
-    url('/ornament/plate-left.avif') type('image/avif'),
-    url('/ornament/plate-left.webp') type('image/webp')
+    url('/ornament/hero-1800.avif') type('image/avif'),
+    url('/ornament/hero-1800.webp') type('image/webp')
   );
 }
-.plate--right {
-  background-image: url('/ornament/plate-right.webp');
-  background-image: image-set(
-    url('/ornament/plate-right.avif') type('image/avif'),
-    url('/ornament/plate-right.webp') type('image/webp')
-  );
+
+/* Retina and wide viewports get the larger encode. */
+@media (min-width: 1500px), (min-resolution: 1.5dppx) {
+  .plate-img {
+    background-image: url('/ornament/hero-2400.webp');
+    background-image: image-set(
+      url('/ornament/hero-2400.avif') type('image/avif'),
+      url('/ornament/hero-2400.webp') type('image/webp')
+    );
+  }
+}
+
+/* THRESHOLD — the plate full-bleed, anchored so its horizon sits low and the
+   sky fills the upper screen, which is where the content goes (§4). */
+.plate-full {
+  background-size: cover;
+  background-position: center 78%;
+}
+
+/* DESK — a horizon band at the foot of the viewport, below all content. The
+   working screens are calm ivory; this is the plate's ground edge only, and it
+   fades upward into the paper so there is no seam. */
+.plate-horizon {
+  background-size: cover;
+  background-position: center 88%;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 72%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 72%);
 }
 
 /* citeproc emits its own wrappers; these keep an IEEE numeric label from
@@ -204,7 +240,7 @@
 .csl-entry .csl-left-margin {
   display: inline;
   margin-right: 0.4em;
-  color: var(--ink-cobalt);
+  color: var(--ink-indigo);
 }
 .csl-entry .csl-right-inline {
   display: inline;
