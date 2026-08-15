@@ -204,3 +204,32 @@ def no_abstract_paper() -> dict:
 @pytest.fixture
 def openalex_work() -> dict:
     return _openalex_work()
+
+
+@pytest.fixture
+def source_record():
+    """Build a stored-shaped `SourceRecord` for tests of the review layer's pure logic.
+
+    Constructed directly rather than through an adapter: these tests never touch
+    `source_store.put()`, whose guards have their own tests in `test_source_store_hr1.py`.
+    """
+    from app.core.contracts import AbstractSource, Provenance, SourceRecord
+
+    def build(source_id: str, title: str, doi: str | None = None, abstract: str | None = None):
+        csl = {"title": title, "type": "article-journal"}
+        if doi:
+            csl["DOI"] = doi
+        return SourceRecord(
+            source_id=source_id,
+            csl=csl,
+            provenance=Provenance(
+                provider="semantic_scholar",
+                endpoint="/paper/search",
+                retrieved_at="2026-08-15T10:00:00+00:00",
+                external_url=f"https://doi.org/{doi}" if doi else "https://example.org/x",
+            ),
+            abstract=abstract,
+            abstract_source=AbstractSource.S2 if abstract else AbstractSource.UNAVAILABLE,
+        )
+
+    return build
