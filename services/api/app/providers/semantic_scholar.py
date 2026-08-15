@@ -308,8 +308,10 @@ class SemanticScholarProvider:
 
         snippets: list[Snippet] = []
         for snippet, paper, score in staged:
-            record = by_corpus.get(str(paper.get("corpusId") or paper.get("corpusid")))
-            if record is None:
+            hydrated_record = by_corpus.get(
+                str(paper.get("corpusId") or paper.get("corpusid"))
+            )
+            if hydrated_record is None:
                 # Hydration found nothing for this corpus id. Dropped rather than
                 # fabricated: without a stored record there is no source_id to cite, and
                 # inventing one is the exact failure HR-1 exists to prevent.
@@ -320,8 +322,8 @@ class SemanticScholarProvider:
                     kind=snippet.get("snippetKind") or "body",
                     section=snippet.get("section"),
                     score=score,
-                    source_id=record.source_id,
-                    record=record,
+                    source_id=hydrated_record.source_id,
+                    record=hydrated_record,
                 )
             )
         return snippets

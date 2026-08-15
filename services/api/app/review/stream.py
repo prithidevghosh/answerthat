@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 from app.core.contracts import (
     Claim,
@@ -50,7 +50,9 @@ __all__ = ["ReviewRunner", "ReviewStats"]
 
 #: Verdicts worth showing as missing work. `does_not_address` is counted, not emitted —
 #: it is a negative result about a candidate, not a finding about the paper.
-_MISSING_WORK_SEVERITY: dict[VerificationLabel, str] = {
+Severity = Literal["high", "medium", "low", "info"]
+
+_MISSING_WORK_SEVERITY: dict[VerificationLabel, Severity] = {
     VerificationLabel.SUPPORTS: "high",
     VerificationLabel.CONTRADICTS: "high",
     VerificationLabel.PARTIALLY_SUPPORTS: "medium",
@@ -59,7 +61,7 @@ _MISSING_WORK_SEVERITY: dict[VerificationLabel, str] = {
 
 #: A cited source that does not support the claim it is attached to is the more serious
 #: finding of the two kinds — it is a defect in the manuscript as written.
-_MISMATCH_SEVERITY: dict[VerificationLabel, str] = {
+_MISMATCH_SEVERITY: dict[VerificationLabel, Severity] = {
     VerificationLabel.CONTRADICTS: "high",
     VerificationLabel.DOES_NOT_ADDRESS: "high",
     VerificationLabel.PARTIALLY_SUPPORTS: "medium",

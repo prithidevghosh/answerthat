@@ -241,7 +241,7 @@ class PostgresResponseCache:
                 result = await session.execute(
                     delete(ProviderCacheRow).where(ProviderCacheRow.expires_at <= utcnow())
                 )
-                return int(result.rowcount or 0)
+                return int(getattr(result, "rowcount", 0) or 0)
         except SQLAlchemyError as exc:
             raise CacheUnavailable(f"cache purge failed: {exc}") from exc
 

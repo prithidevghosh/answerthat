@@ -306,11 +306,11 @@ class PostgresSourceStore(_BaseSourceStore):
         for row in rows:
             latest[row.source_id] = row  # ordered ascending, so the last one wins
         for source_id in missing:
-            row = latest.get(source_id)
-            if row is None:
+            found = latest.get(source_id)
+            if found is None:
                 self._index_absent(source_id)
             else:
-                self._index_record(row.to_record())
+                self._index_record(found.to_record())
 
     async def fetch(self, source_id: str) -> SourceRecord | None:
         """Async read straight from the database, warming the index as a side effect."""

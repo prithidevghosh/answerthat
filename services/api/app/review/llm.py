@@ -24,6 +24,7 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 from anthropic.types import Message
+from anthropic.types.output_config_param import OutputConfigParam
 
 from app.core.contracts import MissingAPIKeyError
 
@@ -87,15 +88,18 @@ class StructuredLLM:
         `max_tokens` bounds thinking *and* answer together, so it is set generously —
         a truncated structured response raises rather than returning partial data.
         """
+        # Typed as the SDK's param rather than inferred: a bare dict literal widens to
+        # `dict[str, Collection[str]]` and stops matching the `create` overloads.
+        output_config: OutputConfigParam = {
+            "effort": self.effort,  # type: ignore[typeddict-item]
+            "format": {"type": "json_schema", "schema": schema},
+        }
         response: Message = await self._client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": prompt}],
-            output_config={
-                "effort": self.effort,
-                "format": {"type": "json_schema", "schema": schema},
-            },
+            output_config=output_config,
         )
 
         self.calls += 1
