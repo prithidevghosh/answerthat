@@ -596,15 +596,21 @@ raise-on-unwarmed behaviour. · 2026-08-15
 
 ```
 $ cd services/api && uv run pytest tests/unit/b2 -q
-163 passed in 0.66s
+179 passed in 0.85s
 
-  12  test_key_enforcement.py        8  test_ratelimit.py         7  test_cache_keys.py
+  12  test_key_enforcement.py        8  test_ratelimit.py          7  test_cache_keys.py
   22  test_semantic_scholar.py      28  test_openalex_and_crossref.py
-  17  test_source_store_hr1.py      21  test_provider_protocol.py  8  test_postgres_schema.py
-  40  test_review_pipeline.py
+  17  test_source_store_hr1.py      21  test_provider_protocol.py   8  test_postgres_schema.py
+  40  test_review_pipeline.py       16  test_review_services.py
+
+$ uv run pytest tests/unit -q          # whole project, all four agents
+494 passed, 1 warning in 10.93s
 
 $ uv run ruff check app/providers app/review tests/unit/b2
 All checks passed!
+
+$ uv run mypy app/providers app/review
+Success: no issues found in 25 source files
 ```
 
 | Criterion | Evidence |
