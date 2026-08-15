@@ -278,6 +278,13 @@ either word, and passes if a violation hides behind an alias. `ast.walk` for `Aw
 `pytestmark = pytest.mark.asyncio` applies to sync tests in the same file and each one warns.
 Put `@pytest.mark.asyncio` on the async tests individually.
 
+2026-08-15 · B3 · Hold a *session factory*, not an `AsyncSession` — B1's stores take a session
+`PostgresDocumentStore(session)` and `PostgresSourceStore` are per-unit-of-work. Wiring one into
+a process-lifetime singleton at startup accumulates a transaction across unrelated requests, so
+one bad edit poisons the next request's reads. `app/api/adapters.py` holds the *class* plus
+`app.core.db.session_scope` and opens a session per call. mypy caught this — it presented as
+`Argument 1 has incompatible type "Any | None"`, which is worth not waving through.
+
 ---
 
 ## 5. Interface requests & blockers
@@ -454,6 +461,65 @@ raise-on-unwarmed behaviour. · 2026-08-15
 
 > Paste the proof when you claim a checkpoint. Test output, command output, screenshot paths.
 > Format: `CP-N · <agent> · <date>` followed by evidence per acceptance criterion.
+
+### CP-4 — Providers · B2 · 2026-08-15 · **complete except live-Postgres verification**
+
+```
+$ cd services/api && uv run pytest tests/unit/b2 -q
+163 passed in 0.66s
+
+  12  test_key_enforcement.py        8  test_ratelimit.py         7  test_cache_keys.py
+  22  test_semantic_scholar.py      28  test_openalex_and_crossref.py
+  17  test_source_store_hr1.py      21  test_provider_protocol.py  8  test_postgres_schema.py
+  40  test_review_pipeline.py
+
+$ uv run ruff check app/providers app/review tests/unit/b2
+All checks passed!
+```
+
+| Criterion | Evidence |
+|---|---|
+| Adapters for S2 / OpenAlex / Crossref behind the `Provider` protocol | `test_provider_protocol.py` — all four Appendix A methods present, async, and with matching parameter names on all three adapters (`Provider` is not `@runtime_checkable`, so this is the only conformance check that exists) |
+| Both keys required, `MissingAPIKeyError`, no fallback (HR-2) | `test_key_enforcement.py` (12) + `test_construction_raises_without_a_key` on each adapter. `test_there_is_no_anonymous_constructor_argument` also pins the constructor *shape* — ADR-010's failure mode arrives as `allow_anonymous=True` long before it arrives as a deleted check |
+| Token-bucket limiter per provider (S2 ~1 rps; OpenAlex credit-aware) | `test_ratelimit.py` — pacing, FIFO fairness, raise-past-budget, `penalise()` after a 429; credits charged per endpoint class (1/10/100/1000) with a refused charge not recorded |
+| All calls send `mailto` for the polite pool | `test_every_openalex_call_carries_key_and_mailto`, `test_crossref_calls_carry_mailto` — asserted on the **request**, in both the query string and the User-Agent |
+| Response cache in Postgres keyed by `(provider, endpoint, normalized_query_hash)` with TTL | `test_cache_keys.py` (key derivation, normalization, expiry) + `test_postgres_schema.py` (DDL compiles against the real PostgreSQL dialect; `ix_provider_cache_lookup` is exactly those three columns; upsert compiles to `ON CONFLICT DO UPDATE`). **Not yet run against a live server — see the caveat below.** |
+| `abstract_inverted_index` inverted to plain text | `test_invert_abstract_*` — reconstruction, sparse positions, and `None` (not `""`) for an empty index |
+| Abstract fallback chain S2 → OpenAlex inverted → S2 TLDR → `unavailable` | Five tests in `test_openalex_and_crossref.py`, including that a full OpenAlex abstract outranks an S2 TLDR, and that a `ProviderRateLimited` mid-chain **propagates** rather than becoming "no abstract" |
+| Provider adapters are the only writers to `source_store` — enforced, not documented | `test_source_store_hr1.py` (17). Four runtime guards, each with an attack test: caller module must be under `app.providers`, provenance must have been minted by `ProviderHTTP` from a real response, `external_url` must be absolute http(s), and an existing record may only be *enriched*. Plus `test_no_review_module_writes_to_the_source_store` and `test_the_store_contains_no_update_or_delete_at_all` |
+
+**Caveat, stated rather than discovered:** Docker is unavailable in this environment, so
+`PostgresResponseCache` and `PostgresSourceStore` have **not** been exercised against a running
+Postgres. What is proven offline: both tables are registered on B1's `Base` (so `create_all()`
+creates them), the DDL and every statement compile against the real PostgreSQL dialect, and the
+store's module emits no `UPDATE`/`DELETE`/`ON CONFLICT` at all. What is **not** proven: that a
+round trip through asyncpg works. The `InMemory*` variants carry the identical guards and logic,
+so the behaviour under test is production code — but T1 should run these two classes against the
+compose Postgres before the honesty audit signs off. Nothing else in CP-4 depends on it.
+
+### CP-5 — Review · B2 · 2026-08-15 · **complete on my side; the SSE endpoint is B3's**
+
+| Criterion | Evidence |
+|---|---|
+| Atomic claims carrying `span_id` + `anchor_ids` + `citability` | `test_review_pipeline.py` claims section. The model returns **character offsets**, claim text is sliced from the paper in code, and a claim whose echoed quote disagrees with its offsets is dropped (`test_a_claim_whose_quote_disagrees_with_its_offsets_is_dropped`). `anchor_ids` are computed from offsets — `test_anchor_ids_are_computed_from_offsets_not_supplied_by_the_model` |
+| All three candidate strategies live | `test_all_three_strategies_run_for_a_claim` asserts each of snippet search, Recommendations-from-bibliography, and OpenAlex search + one-hop expansion is actually invoked, **with the claim text as the query, not the section** |
+| RRF, dedupe by DOI/S2 id, subtract everything already cited | `test_reciprocal_rank_fusion_rewards_agreement_across_strategies`, `test_the_same_paper_from_two_providers_collapses_to_one_candidate`, `test_a_doi_less_paper_collapses_on_normalized_title_and_year`, `test_everything_already_cited_is_subtracted` |
+| Rerank scores against **the claim**, not the topic | `test_rerank_sorts_by_claim_relevance_not_by_fused_rank` — the famous survey wins on fused rank and loses on claim relevance. `test_rerank_discards_a_source_id_it_was_not_given` keeps HR-1 intact through the rerank step |
+| Verifier returns one of the five labels | Four via the schema `enum`; `unverifiable_no_abstract` is produced by code before any model call (`test_no_abstract_yields_the_fourth_outcome_without_calling_the_model`) |
+| Verbatim quote + mechanical substring check kills the finding | Seven tests on `quote_is_present` alone: verbatim passes, **paraphrase dies**, fluent invention dies, re-encoded punctuation and reflowed whitespace still pass, a sub-25-char fragment is rejected, and stem/stopword matching is asserted **absent**. End to end: `test_verifier_kills_a_finding_whose_quote_is_not_in_the_abstract` |
+| The same verifier serves both callers | `verify_detailed()` is called for candidates and for existing anchors in `stream.py`. `test_an_existing_anchor_that_does_not_support_its_claim_is_a_finding` and `test_a_supported_existing_anchor_produces_no_finding` |
+| Findings ordered by citability descending with `verified / total` | `test_findings_arrive_in_descending_citability_order`, `test_progress_reports_verified_over_total_throughout` (`claims_verified` goes 0→1→2→3 against `claims_total`) |
+
+**Honestly scoped:** the last criterion says "stream over **SSE**". I provide the ordered async
+generator (`ReviewRunner.stream(doc_id, section_ids=...)` yielding `(event_name, payload)`, per
+B3's `ReviewRunner` port); the SSE endpoint that serves it is `app/api/`, which is B3's. CP-5 is
+complete on my side of that line and is joint at the boundary.
+
+Also verified beyond the checklist, because a short feed must be explicable rather than
+ambiguous: zero candidates after subtraction emits a `no_candidates_found` finding rather than
+silence; `unverifiable_no_abstract` is emitted and displayed; `does_not_address` is counted in
+progress rather than emitted; and every quote-check kill increments `quote_check_failures` in the
+progress payload.
 
 ### CP-6 — Agent core · B3 · 2026-08-15
 
