@@ -247,6 +247,7 @@ class DetachTransformReattach:
                         landed_span_id=None,
                         score=best_score if best_index >= 0 else None,
                         threshold=self.threshold,
+                        best_span_id=new_spans[best_index].id if best_index >= 0 else None,
                     )
                 )
                 continue
@@ -262,6 +263,7 @@ class DetachTransformReattach:
                     landed_span_id=target.id,
                     score=best_score,
                     threshold=self.threshold,
+                    best_span_id=target.id,
                 )
             )
 

@@ -65,6 +65,10 @@ class ReattachmentRecord(BaseModel):
     landed_span_id: str | None = None  # None → the anchor found no home
     score: float | None = None
     threshold: float = DEFAULT_SIMILARITY_THRESHOLD
+    best_span_id: str | None = None
+    """The argmax span regardless of threshold. Kept so that "keep it here" remains an
+    option the user can actually take when an anchor falls below the bar — a decision the
+    UI can only offer if we remember where the anchor nearly landed."""
 
 
 class ChangeContext(BaseModel):
