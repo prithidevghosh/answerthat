@@ -9,21 +9,25 @@ const config: Config = {
   content: ['./src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      // Channel form + <alpha-value> so opacity modifiers work. A bare
+      // `var(--x)` here compiles `border-sanguine/40` to invalid CSS that
+      // silently falls back to the default border — no build error, no warning.
+      // See the note in globals.css :root.
       colors: {
-        paper: 'var(--paper)',
-        'paper-deep': 'var(--paper-deep)',
-        plate: 'var(--plate)',
+        paper: 'rgb(var(--paper-rgb) / <alpha-value>)',
+        'paper-deep': 'rgb(var(--paper-deep-rgb) / <alpha-value>)',
+        plate: 'rgb(var(--plate-rgb) / <alpha-value>)',
 
         // Inks — semantic, not decorative.
-        cobalt: 'var(--ink-cobalt)',
-        'cobalt-lt': 'var(--ink-cobalt-lt)',
-        sepia: 'var(--ink-sepia)',
-        sanguine: 'var(--ink-sanguine)',
-        verdigris: 'var(--ink-verdigris)',
+        cobalt: 'rgb(var(--ink-cobalt-rgb) / <alpha-value>)',
+        'cobalt-lt': 'rgb(var(--ink-cobalt-lt-rgb) / <alpha-value>)',
+        sepia: 'rgb(var(--ink-sepia-rgb) / <alpha-value>)',
+        sanguine: 'rgb(var(--ink-sanguine-rgb) / <alpha-value>)',
+        verdigris: 'rgb(var(--ink-verdigris-rgb) / <alpha-value>)',
 
-        primary: 'var(--text-primary)',
-        secondary: 'var(--text-secondary)',
-        muted: 'var(--text-muted)',
+        primary: 'rgb(var(--text-primary-rgb) / <alpha-value>)',
+        secondary: 'rgb(var(--text-secondary-rgb) / <alpha-value>)',
+        muted: 'rgb(var(--text-muted-rgb) / <alpha-value>)',
       },
       borderColor: {
         hair: 'var(--rule-hair)',

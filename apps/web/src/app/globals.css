@@ -6,22 +6,44 @@
    Tokens — transcribed from design/design-system.md §2. Single source of truth.
    --------------------------------------------------------------------------- */
 :root {
+  /*
+    Each token is declared twice, on purpose.
+
+    The hex form is the readable source of truth and is what plain CSS in this
+    file uses. The `-rgb` channel form is what tailwind.config.ts consumes as
+    `rgb(var(--x-rgb) / <alpha-value>)`, because Tailwind v3 cannot apply an
+    opacity modifier to a colour defined as a bare `var(--x)` — `border-sanguine/40`
+    silently emits invalid CSS and falls back, with no build error. The two forms
+    must be kept in step; the values below are paired line by line for that reason.
+  */
+
   /* Ground */
   --paper: #f7f3ea;
+  --paper-rgb: 247 243 234;
   --paper-deep: #efe8da;
+  --paper-deep-rgb: 239 232 218;
   --plate: #ffffff;
+  --plate-rgb: 255 255 255;
 
   /* Inks — semantic, not decorative */
   --ink-cobalt: #1b3a6b;
+  --ink-cobalt-rgb: 27 58 107;
   --ink-cobalt-lt: #4a6ea0;
+  --ink-cobalt-lt-rgb: 74 110 160;
   --ink-sepia: #8a6a3d;
+  --ink-sepia-rgb: 138 106 61;
   --ink-sanguine: #9b3b2f;
+  --ink-sanguine-rgb: 155 59 47;
   --ink-verdigris: #2f6b5f;
+  --ink-verdigris-rgb: 47 107 95;
 
   /* Text */
   --text-primary: #16202e;
+  --text-primary-rgb: 22 32 46;
   --text-secondary: #55606e;
+  --text-secondary-rgb: 85 96 110;
   --text-muted: #8a8f98;
+  --text-muted-rgb: 138 143 152;
 
   /* Lines — engraving hairlines, never heavy borders */
   --rule-hair: rgba(27, 58, 107, 0.18);
@@ -175,4 +197,19 @@
     url('/ornament/plate-right.avif') type('image/avif'),
     url('/ornament/plate-right.webp') type('image/webp')
   );
+}
+
+/* citeproc emits its own wrappers; these keep an IEEE numeric label from
+   colliding with the card layout and let author-date styles run as plain prose. */
+.csl-entry .csl-left-margin {
+  display: inline;
+  margin-right: 0.4em;
+  color: var(--ink-cobalt);
+}
+.csl-entry .csl-right-inline {
+  display: inline;
+}
+.csl-entry .csl-bib-body,
+.csl-entry .csl-entry {
+  display: inline;
 }

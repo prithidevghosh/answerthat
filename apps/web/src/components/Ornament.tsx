@@ -33,7 +33,14 @@ export function MarginPlates({ strength = 'quiet' }: { strength?: PlateStrength 
       // inset-0, not inset-y-0: a fixed box with only vertical insets collapses
       // to zero width, and the right-hand plate then anchors to x=0 and renders
       // off the left edge of the screen.
-      className={`pointer-events-none fixed inset-0 z-0 hidden select-none xl:block ${opacity}`}
+      //
+      // Shown from 1460px, not 1280px. The rule is "ornament never sits behind
+      // text, at any opacity" and the plates need ~180px each to read as a
+      // plate rather than a smudge: 1100 (column) + 2x180 = 1460. Below that
+      // the ornament is removed entirely, which the design system asks for
+      // anyway below 1280 — this just sets the floor where the geometry
+      // actually works instead of where it merely looks close.
+      className={`pointer-events-none fixed inset-0 z-0 hidden select-none min-[1460px]:block ${opacity}`}
     >
       <Plate side="left" />
       <Plate side="right" />
@@ -58,10 +65,10 @@ function Plate({ side }: { side: 'left' | 'right' }) {
       // style object cannot express the same property twice.
       className={`plate plate--${side} absolute inset-y-0 ${side === 'left' ? 'left-0' : 'right-0'}`}
       style={{
-        // Wide enough to read as a plate, never wide enough to reach the
-        // content column: the column caps at 1100px and this only renders at
-        // >=1280px, so at the tightest case each band still clears it.
-        width: 'max(180px, calc((100vw - 1100px) / 2))',
+        // Exactly the margin outside the 1100px column — never a fixed floor,
+        // which would push ornament under the text on narrower viewports. This
+        // makes the overlap structurally impossible rather than merely unlikely.
+        width: 'calc((100vw - 1100px) / 2)',
         backgroundPosition: `${side} center`,
         WebkitMaskImage: `${fadeInward}, ${fadeEnds}`,
         maskImage: `${fadeInward}, ${fadeEnds}`,
