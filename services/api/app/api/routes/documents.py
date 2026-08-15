@@ -86,6 +86,37 @@ async def parse_status(request: Request, doc_id: str) -> ParseStatus:
     return ParseStatus.model_validate(status)
 
 
+@router.get("/{doc_id}/parse")
+async def parse_view(request: Request, doc_id: str, version: int | None = None) -> dict:
+    """Everything the parse inspector screen needs, in one call.
+
+    Composed rather than merged: the IR is read from B1's version store, the reference
+    tiers and orphan markers come from B1's ingest report, and the style from B1's
+    detector. This route owns none of that data — it owns the shape F1 designed against
+    (memory.md §5, F1 → B3).
+
+    `counts` is the CP-2 conservation statement — resolved + parsed_unresolved +
+    low_confidence + quarantined must equal `total_detected` — and it is returned whether
+    or not it balances, because a parse that lost references needs to say so (HR-3).
+    """
+    svc = services(request)
+    document = await load_document(svc, doc_id, version)
+    report = await svc.require("ingest").parse_report(doc_id)
+
+    style = None
+    if svc.style is not None:
+        style = await svc.style.detect(doc_id)
+
+    return {
+        "document": document.model_dump(mode="json"),
+        "references": report.get("references", []),
+        "orphan_markers": report.get("orphan_markers", []),
+        "counts": report.get("counts", {}),
+        "quarantine": [entry.model_dump(mode="json") for entry in document.quarantine],
+        "style": style,
+    }
+
+
 @router.get("/{doc_id}", response_model=Document)
 async def get_document(request: Request, doc_id: str, version: int | None = None) -> Document:
     return await load_document(services(request), doc_id, version)
