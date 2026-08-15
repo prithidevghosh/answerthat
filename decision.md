@@ -295,3 +295,284 @@ by citability means the first thirty seconds carry the most value. Section-scope
 a *user* option for speed, but full-paper streaming is the default because partial coverage
 presented as a review is the dishonesty HR-3 exists to prevent — and the `verified / total` counter
 makes in-progress state unmistakable.
+
+---
+
+## ADR-015 — OpenAI as the LLM provider, with per-role model routing
+
+**Status:** Accepted
+**Supersedes:** nothing — this fills a gap that should never have existed. The original design
+specified six distinct LLM roles without ever naming a provider or a model.
+
+**Decision.** All LLM calls go to **OpenAI**, through a single client in `app/core/llm.py`. Models
+are selected **per role**, never globally, and every model ID is pinned in one config module — no
+model string appears anywhere else in the codebase.
+
+| Role | Model | Why |
+|---|---|---|
+| Reference repair (ADR-003) | `gpt-5.4-mini` | Mechanical segment-and-label. Cheap, high volume, guarded by a substring check anyway. |
+| Claim extraction (ADR-005) | `gpt-5.4` | Structured decomposition over long sections. Quality matters, volume is per-section. |
+| Candidate rerank | `gpt-5.4-mini` | Only after an embedding prefilter has cut the field to ~10. Highest call volume in the system. |
+| **Verification (ADR-006)** | **`gpt-5.5`** | **Accuracy-critical.** This is the judgment the whole product's honesty rests on — do not economise here. |
+| Planner (ADR-007) | `gpt-5.5` | Command → typed plan. Low volume, high consequence, structured output. |
+| Text transform (ADR-013) | `gpt-5.4` | Rewriting the user's own prose. Quality is visible to the researcher. |
+
+**Reasoning.** A single model for everything is wrong in both directions: frontier models for
+reference-string segmentation is waste, and a cheap model for entailment verification is the one
+place a mistake becomes a false claim shown to a researcher as fact. The rerank stage is the volume
+hotspot (claims × candidates), so it gets an embedding prefilter first and a mini model second.
+
+Structured output is used for **every** role that returns data — JSON Schema via the Responses API,
+not prompt-and-parse. The planner in particular *cannot* emit prose by construction (ADR-007), and
+schema-enforced output is how that's true rather than hoped.
+
+Context windows are ~1M tokens, so whole-section and whole-document prompts fit without chunking.
+Do not build a chunker we don't need.
+
+**Consequences.** `OPENAI_API_KEY` is required at startup on the same terms as the academic APIs
+(HR-2). A per-document token budget is enforced; exceeding it raises and surfaces rather than
+silently truncating the review.
+
+---
+
+## ADR-016 — Embeddings: OpenAI `text-embedding-3-small` at 512 dimensions
+
+**Status:** Accepted
+
+**Context.** `CitationAnchor.context_fingerprint` is central to ADR-013 — detach/reattach scores an
+anchor's recorded sentence context against the rewritten text. **The original contract declared the
+field and never specified what produces it.** The reattachment mechanism, and therefore HR-5, had no
+implementation path.
+
+**Decision.** `text-embedding-3-small` with the `dimensions` parameter set to **512**. Same vendor as
+the LLM, so one key and one client.
+
+**Reasoning.** This is same-document sentence similarity — matching "the sentence this citation used
+to live in" against a handful of candidate sentences in the rewritten paragraph. It is a genuinely
+easy retrieval task over a tiny candidate set; `-3-large` at 3072 dimensions buys nothing here and
+costs 6.5× more and 6× the storage. If reattachment accuracy proves insufficient in testing, the
+upgrade path is a one-line config change — but measure before spending.
+
+The same embeddings serve the rerank prefilter, cutting candidates to ~10 before any LLM sees them.
+
+---
+
+## ADR-017 — Fingerprints live in a side table, not inline in the IR
+
+**Status:** Accepted
+**Amends:** the Appendix A contract in `goal.md`
+
+**Context.** `context_fingerprint: list[float]` sat inline on every `CitationAnchor`. With
+copy-on-write versioning (ADR-004), every document version would duplicate every vector.
+
+**Decision.** `CitationAnchor` carries `fingerprint_id: str | None`. Vectors live in an
+`anchor_fingerprints` table keyed by that id. Fingerprints are **immutable and shared across
+versions** — an anchor's recorded context doesn't change when an unrelated paragraph is edited.
+
+**Reasoning.** Storage is the lesser argument (~245 KB per version at 60 anchors). The real one is
+**diff legibility**: structural diffs are the mechanism by which a user verifies HR-5 with their own
+eyes, and a diff where every citation anchor renders as 512 floats is unreadable. The design's whole
+approval story depends on that diff being human-scannable.
+
+---
+
+## ADR-018 — LLM calls are not deterministic; tests replay recordings
+
+**Status:** Accepted
+
+**Decision.** Do not attempt to make LLM output reproducible via temperature or seeds. Instead,
+`app/core/llm.py` has a **record/replay layer**: `LLM_MODE=record` writes every request/response pair
+keyed by a hash of (role, model, prompt, schema); `LLM_MODE=replay` serves from those recordings and
+**raises on a cache miss** rather than calling the API.
+
+**Reasoning.** Reasoning models don't honour temperature the way older ones did, and a CI suite that
+silently re-runs live LLM calls is both slow and non-reproducible. Replay-with-hard-miss is the only
+honest option — a missing recording is a test that must be re-recorded deliberately, not a test that
+quietly hits the network.
+
+This also gives T1 deterministic e2e runs, and it is the same pattern as the recorded provider
+fixtures for the academic APIs (CP-8).
+
+---
+
+## ADR-019 — Prompts live with their owning module
+
+**Status:** Accepted
+
+**Decision.** No shared `prompts/` directory. Each agent keeps its prompts inside its own package —
+`app/parsing/prompts/`, `app/review/prompts/`, `app/agent/prompts/` — as versioned files, not inline
+string literals. `app/core/llm.py` provides the client and the structured-output plumbing; it holds
+no prompt text.
+
+**Reasoning.** A shared prompts directory is a shared-ownership directory, and shared ownership
+across four parallel agents means merge conflicts and drift. Prompts belong to the module whose
+behaviour they define. Keeping them in files rather than inline makes them reviewable and diffable —
+a prompt change is a behaviour change and should read like one in the history.
+
+---
+
+## ADR-020 — No Alembic in v1; per-agent models, tables created at startup
+
+**Status:** Accepted
+
+**Context.** Three backend agents each define tables (B1: IR, versions; B2: source_store, cache;
+B3: jobs, change sets, metrics). Alembic's linear revision chain conflicts badly under parallel
+authorship — every agent generating a migration against the same head produces a merge every time.
+
+**Decision.** No migrations for v1. Each agent declares SQLModel models in its own package with a
+namespaced table prefix (`ir_`, `src_`, `agent_`); `create_all()` runs at startup; a documented
+`make db-reset` drops and recreates.
+
+**Reasoning.** Greenfield, no production data, no upgrade path to preserve. The cost of Alembic here
+is pure coordination overhead paid daily for a benefit we do not yet need.
+
+**Revisit:** the moment there is data anyone would be upset to lose.
+
+---
+
+## ADR-021 — Optimistic locking on IR versions
+
+**Status:** Accepted
+
+**Context.** Two commands submitted before the first is approved would silently lose one of them —
+the second commits against a stale base and overwrites.
+
+**Decision.** Every command and every change-set approval carries `base_version`. The commit fails
+with a conflict if head has moved, and the UI re-plans against the new head rather than merging.
+
+**Reasoning.** Silent lost updates in a document editor are exactly the class of invisible failure
+HR-3 exists to prevent — the user would see a successful approval and a document missing their
+earlier edit. Refusing and re-planning is honest; merging IR fragments automatically is not something
+we can do safely without understanding both edits.
+
+---
+
+## ADR-022 — Uploads on a local volume; jobs have first-class status
+
+**Status:** Accepted
+
+**Decision.** Uploaded PDFs are written to a mounted volume at `/data/uploads/{doc_id}.pdf` with the
+path recorded in Postgres. No object storage. Background jobs (`arq`) have a `jobs` row carrying
+`status`, `error`, `progress_current`, `progress_total`, exposed over the API and rendered in the UI.
+
+**Reasoning.** Object storage buys nothing in a single-node compose deployment. The jobs table
+matters more than it looks: **a crashed background job is a failure, and HR-3 requires it to be
+visible.** Without a status model, a worker that dies mid-review leaves the UI streaming nothing
+forever, which a user reads as "no findings" — the same false-negative failure mode as ADR-010.
+
+---
+
+## ADR-023 — Single-user, no authentication, stated as scope
+
+**Status:** Accepted
+
+**Decision.** No auth, no accounts, no multi-tenancy. A document is identified by its `doc_id` and
+anyone with the id can access it.
+
+**Reasoning.** Stated rather than discovered. The evaluation is about parsing, grounding, and edit
+safety; auth would consume build time and demonstrate nothing about any of them. Named here so it
+reads as a decision, not an oversight — and so nobody deploys this publicly assuming otherwise.
+
+---
+
+## ADR-024 — All thresholds in one config module
+
+**Status:** Accepted
+
+**Decision.** Every magic number lives in `app/core/config.py` as a named, documented setting.
+Starting values, to be tuned against the golden set — **these are hypotheses, not constants:**
+
+| Threshold | Value | Meaning |
+|---|---|---|
+| `ARBITER_ACCEPT` | 0.85 | agreement score to accept an external record (ADR-001) |
+| `REPAIR_TRIGGER` | 0.75 | parse_confidence below which the repair tier runs (ADR-003) |
+| `REATTACH_ACCEPT` | 0.72 | cosine similarity to reattach an anchor silently (ADR-013) |
+| `REATTACH_FLAG_FLOOR` | 0.55 | below this, no reattachment is proposed at all — user decides |
+| `RERANK_KEEP` | 10 | candidates per claim surviving the embedding prefilter |
+| `VERIFY_KEEP` | 3 | candidates per claim sent to the verifier |
+| `CITABILITY_MIN` | 0.3 | below this a claim is not reviewed (and the count is displayed) |
+| `STYLE_AMBIGUOUS_DELTA` | 0.05 | top-two gap below which style detection returns ambiguous |
+| `DOC_TOKEN_BUDGET` | 2_000_000 | per-document LLM ceiling; exceeding it raises and surfaces |
+
+**Reasoning.** Thresholds scattered as literals cannot be tuned, cannot be tested at their
+boundaries, and cannot be reported. T1 needs to sweep several of these against the golden set;
+that is only possible if they have names.
+
+---
+
+## ADR-025 — A matching DOI is identity, not similarity
+
+**Status:** Accepted (amends ADR-001)
+
+**Context.** ADR-001 and `goal.md` §7 fix the arbiter's agreement score at
+`0.6·title_sim + 0.2·year_match + 0.2·first_author_sim`, accepted at ≥ 0.85. Applied literally to a
+reference whose parse yielded a DOI but no title — common, because GROBID often recovers an `idno`
+from a mangled entry it could not otherwise segment — the score has a ceiling of 0.4. Such a
+reference could never resolve, no matter how certainly we knew which work it was.
+
+**Decision.** When our parse and the external record both carry a DOI and the two DOIs are equal
+(case-insensitively, prefix-stripped), the agreement score is **1.0**, labelled `doi_identity` in
+the breakdown. Every other case uses the specified formula exactly as written, including when both
+sides carry DOIs that differ.
+
+**Reasoning.** The formula estimates whether an external record *is* the work our reference refers
+to. A DOI is a unique identifier for exactly that: two records sharing one are the same work by
+definition, and running a fuzzy title comparison over that fact answers a question already answered
+exactly. This is not a loosening — a DOI mismatch still falls through to the formula, and the
+0.85 threshold is untouched. The label is exposed so the audit view can show *why* a reference
+resolved, and a DOI-identity match is visibly a different kind of evidence from a fuzzy one.
+
+**Consequences.** A wrong DOI in the source PDF resolves confidently to the wrong paper. That is
+true of any DOI-first design, including ADR-001's own cascade, and the raw string is retained so
+the error is inspectable rather than hidden.
+
+---
+
+## ADR-026 — One IR span is one sentence
+
+**Status:** Accepted (refines ADR-004)
+
+**Context.** ADR-004 fixes the IR as sections → blocks → spans with text living only in spans, but
+does not say how big a span is. GROBID will segment sentences on request (`segmentSentences=1`),
+producing `<s>` elements inside each `<p>`.
+
+**Decision.** A span is a sentence. A paragraph block holds one span per sentence; a `<p>` with no
+`<s>` children falls back to a single span for the whole paragraph.
+
+**Reasoning.** Two downstream requirements are stated in terms of sentences and become awkward at
+paragraph granularity. Reattachment (ADR-013) scores an anchor's `context_fingerprint` against "the
+new sentences" — with paragraph spans, every anchor in a rewritten paragraph would score against
+one large blob and reattach arbitrarily. Claims (CP-5) carry a `span_id`, and a claim that points
+at a whole paragraph cannot be shown to a user as the thing being checked. Sentence spans also make
+`offset_in_span` small and stable, so an edit to one sentence does not move every anchor in the
+paragraph.
+
+**Consequences.** More spans per document (195 for a 71-paragraph paper), so traversal is over a
+larger list; all of it is linear and none of it is hot. Sentence segmentation quality becomes a
+GROBID dependency — a bad split produces two spans where there should be one, which is visible and
+recoverable rather than silent.
+
+---
+
+## ADR-027 — A repair-tier violation discards the whole entry, not just the offending field
+
+**Status:** Accepted (sharpens ADR-003)
+
+**Context.** ADR-003 says the post-check "discards any emitted field value that is not a substring
+of the raw string; the entry is then marked unparsed rather than accepted". That admits two
+readings: drop the bad field and keep the rest, or reject the entry entirely.
+
+**Decision.** Any violation discards the offending value **and** marks the whole entry unparsed.
+The entry goes to `quarantined` with its raw string retained verbatim, and the violations are kept
+for display.
+
+**Reasoning.** The stricter reading. A model that invented one field has demonstrated it will
+invent; there is no principled basis for trusting the remaining fields of the same output, which
+were produced by the same process in the same call. Keeping the "good" fields would mean shipping a
+record we have positive evidence to distrust, and the failure would be invisible because the
+remaining fields *do* pass the check. Quarantine is cheap — the reference is still shown to the
+user with its real text — and a false quarantine costs far less than a fabricated author.
+
+**Consequences.** A single over-eager expansion (`Proc.` → `Proceedings`) costs the whole entry.
+Observed in testing and accepted: those entries reach the arbiter as unresolved and can still be
+recovered from the raw string by an external match.
