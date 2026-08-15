@@ -50,6 +50,10 @@ ProviderName = Literal["semantic_scholar", "openalex", "crossref"]
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
+# Envelope flag for a cached "the provider has no such record". Distinct from an empty
+# body: "we asked and it does not exist" is a result, "we got nothing back" is a failure.
+_NOT_FOUND_MARKER = "__not_found__"
+
 
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -170,13 +174,20 @@ class ProviderHTTP:
         self.cache = cache
         self.limiter = limiter
         self.budget = budget
-        self._auth_headers = dict(auth_headers or {})
+        # Sent per request rather than baked into the client, so they hold even when a
+        # caller supplies its own `httpx.AsyncClient`. OpenAlex accepts the polite-pool
+        # contact in the User-Agent as well as the query string, and a shared client that
+        # dropped it would put us outside the polite pool without any visible symptom.
+        self._headers = {
+            "User-Agent": user_agent,
+            "Accept": "application/json",
+            **(auth_headers or {}),
+        }
         self._auth_params = dict(auth_params or {})
         self.retry = retry or RetryPolicy()
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_s),
-            headers={"User-Agent": user_agent, "Accept": "application/json"},
             follow_redirects=True,
         )
         self.live_calls = 0
@@ -196,7 +207,37 @@ class ProviderHTTP:
         ttl_s: int,
         credits: int = 0,
     ) -> ProviderResponse:
-        return await self._request("GET", endpoint, params=params, json_body=None, ttl_s=ttl_s, credits=credits)
+        response = await self._request(
+            "GET", endpoint, params=params, json_body=None, ttl_s=ttl_s, credits=credits
+        )
+        assert response is not None  # not_found_ok is False, so 404 raised
+        return response
+
+    async def get_json_or_none(
+        self,
+        endpoint: str,
+        *,
+        params: dict[str, Any] | None = None,
+        ttl_s: int,
+        credits: int = 0,
+    ) -> ProviderResponse | None:
+        """For endpoints where 404 is a *result*, not a failure.
+
+        S2's `/paper/search/match` 404s when no title matches. That is the arbiter
+        legitimately learning "this reference resolves nowhere" — a `quarantined` tier
+        entry, not an error. Every other status is still raised, and the 404 is cached so
+        a bibliography full of unresolvable references does not re-spend the rate limit
+        on every run.
+        """
+        return await self._request(
+            "GET",
+            endpoint,
+            params=params,
+            json_body=None,
+            ttl_s=ttl_s,
+            credits=credits,
+            not_found_ok=True,
+        )
 
     async def post_json(
         self,
@@ -207,7 +248,11 @@ class ProviderHTTP:
         ttl_s: int,
         credits: int = 0,
     ) -> ProviderResponse:
-        return await self._request("POST", endpoint, params=params, json_body=json_body, ttl_s=ttl_s, credits=credits)
+        response = await self._request(
+            "POST", endpoint, params=params, json_body=json_body, ttl_s=ttl_s, credits=credits
+        )
+        assert response is not None
+        return response
 
     # ---------------- internals ----------------
 
@@ -220,7 +265,8 @@ class ProviderHTTP:
         json_body: dict[str, Any] | None,
         ttl_s: int,
         credits: int,
-    ) -> ProviderResponse:
+        not_found_ok: bool = False,
+    ) -> ProviderResponse | None:
         # The cache key covers method, semantic params and body — never credentials.
         canonical, query_hash = normalize_query(
             {"method": method, "params": params or {}, "body": json_body or {}}
@@ -230,6 +276,8 @@ class ProviderHTTP:
         if hit is not None:
             self.cache_hits += 1
             env = hit.payload
+            if env.get(_NOT_FOUND_MARKER):
+                return None
             return ProviderResponse(
                 provider=self.provider,
                 endpoint=endpoint,
@@ -241,10 +289,23 @@ class ProviderHTTP:
             )
 
         body, final_url = await self._send_with_retries(
-            method, endpoint, params, json_body, credits=credits
+            method, endpoint, params, json_body, credits=credits, not_found_ok=not_found_ok
         )
 
         retrieved_at = _utcnow_iso()
+        if body is None:
+            # A cached "no such record". Cheap to store and it saves the arbiter from
+            # re-asking about every unresolvable reference on every run.
+            await self.cache.put(
+                self.provider,
+                endpoint,
+                query_hash,
+                canonical,
+                {_NOT_FOUND_MARKER: True, "url": final_url, "retrieved_at": retrieved_at},
+                ttl_s,
+            )
+            return None
+
         await self.cache.put(
             self.provider,
             endpoint,
@@ -269,7 +330,8 @@ class ProviderHTTP:
         params: dict[str, Any] | None,
         json_body: dict[str, Any] | None,
         credits: int = 0,
-    ) -> tuple[dict, str]:
+        not_found_ok: bool = False,
+    ) -> tuple[dict | None, str]:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         send_params: dict[str, Any] = {k: v for k, v in (params or {}).items() if v is not None}
         send_params.update(self._auth_params)
@@ -290,7 +352,7 @@ class ProviderHTTP:
                     url,
                     params=send_params,
                     json=json_body,
-                    headers=self._auth_headers or None,
+                    headers=self._headers,
                 )
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
@@ -298,6 +360,9 @@ class ProviderHTTP:
                     raise ProviderUnavailable(self.provider, endpoint, attempt, last_error) from exc
                 await asyncio.sleep(self._backoff(attempt))
                 continue
+
+            if response.status_code == 404 and not_found_ok:
+                return None, str(response.url)
 
             if response.status_code == 401 or response.status_code == 403:
                 # Not retried. With HR-2 in force these mean the key is wrong or revoked,
