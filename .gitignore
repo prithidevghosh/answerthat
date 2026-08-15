@@ -1,0 +1,28 @@
+# secrets — never commit
+.env
+.env.local
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# node
+node_modules/
+.next/
+out/
+.turbo/
+
+# runtime artefacts — do not commit uploads, GROBID models, or large fixtures
+uploads/
+*.pdf
+!tests/**/fixtures/**/*.pdf
+grobid-home/
+.DS_Store

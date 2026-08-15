@@ -1,0 +1,63 @@
+[project]
+name = "answerthat-api"
+version = "0.1.0"
+description = "Grounded peer review and citation-safe editing for academic PDFs"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "greenlet>=3.1",
+    "redis>=5.2",
+    "httpx>=0.28",
+    "lxml>=5.3",
+    "python-multipart>=0.0.17",
+    "rapidfuzz>=3.10",
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["error::DeprecationWarning:app.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# contracts.py is goal.md Appendix A verbatim and must not be reformatted.
+"app/core/contracts.py" = ["ALL"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Appendix A verbatim; not ours to annotate further.
+module = "app.core.contracts"
+ignore_errors = true
