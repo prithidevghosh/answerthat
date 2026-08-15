@@ -1,0 +1,142 @@
+"""Upload, parse status, IR retrieval, versions, style, export."""
+
+from __future__ import annotations
+
+import uuid
+
+from fastapi import APIRouter, HTTPException, Request, UploadFile
+from fastapi.responses import PlainTextResponse
+
+from app.api.deps import Services
+from app.api.schemas import (
+    JobAccepted,
+    ParseStatus,
+    RevertRequest,
+    StyleResponse,
+    StyleSelection,
+    VersionInfo,
+)
+from app.core.contracts import Document
+
+router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
+def services(request: Request) -> Services:
+    return request.app.state.services
+
+
+async def load_document(svc: Services, doc_id: str, version: int | None = None) -> Document:
+    store = svc.require("documents")
+    document = await store.get(doc_id, version)
+    if document is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"document {doc_id!r}"
+                + (f" version {version}" if version is not None else "")
+                + " does not exist"
+            ),
+        )
+    return document
+
+
+@router.post("", response_model=JobAccepted, status_code=202)
+async def upload(request: Request, file: UploadFile) -> JobAccepted:
+    """The first screen of the product posts here. Returns a job id immediately; parsing
+    runs in the background because GROBID plus arbitration takes far longer than a request."""
+    svc = services(request)
+    ingest = svc.require("ingest")
+
+    if file.content_type not in {"application/pdf", "application/x-pdf", None}:
+        raise HTTPException(
+            status_code=415,
+            detail=f"expected a PDF, received {file.content_type!r}",
+        )
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="the uploaded file is empty")
+    if len(payload) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"the PDF is {len(payload) // 1_048_576} MB; the limit is "
+            f"{MAX_UPLOAD_BYTES // 1_048_576} MB",
+        )
+
+    doc_id = f"doc-{uuid.uuid4().hex[:12]}"
+    job_id = await ingest.enqueue(doc_id=doc_id, filename=file.filename, payload=payload)
+
+    return JobAccepted(
+        job_id=job_id,
+        doc_id=doc_id,
+        poll=f"/api/documents/{doc_id}/parse-status",
+    )
+
+
+@router.get("/{doc_id}/parse-status", response_model=ParseStatus)
+async def parse_status(request: Request, doc_id: str) -> ParseStatus:
+    """A failed parse reports `failed` with its reason. It never reports `complete` with an
+    empty document (HR-3)."""
+    svc = services(request)
+    status = await svc.require("ingest").status(doc_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"no ingest job for document {doc_id!r}")
+    return ParseStatus.model_validate(status)
+
+
+@router.get("/{doc_id}", response_model=Document)
+async def get_document(request: Request, doc_id: str, version: int | None = None) -> Document:
+    return await load_document(services(request), doc_id, version)
+
+
+@router.get("/{doc_id}/versions", response_model=VersionInfo)
+async def list_versions(request: Request, doc_id: str) -> VersionInfo:
+    svc = services(request)
+    versions = await svc.require("documents").list_versions(doc_id)
+    if not versions:
+        raise HTTPException(status_code=404, detail=f"document {doc_id!r} does not exist")
+    return VersionInfo(doc_id=doc_id, versions=versions, current=max(versions))
+
+
+@router.post("/{doc_id}/revert")
+async def revert(request: Request, doc_id: str, payload: RevertRequest) -> dict:
+    """Reverting appends a new version whose content is the old one, so history stays
+    append-only and a revert is itself revertible."""
+    svc = services(request)
+    result = await svc.versions().revert(doc_id, payload.to_version)
+    return result.model_dump(mode="json")
+
+
+@router.get("/{doc_id}/style", response_model=StyleResponse)
+async def get_style(request: Request, doc_id: str) -> StyleResponse:
+    """Round-trip style detection (ADR-011). `ambiguous` means the top two scored within
+    0.05 and the user must choose — we do not guess and present it as a finding."""
+    svc = services(request)
+    result = await svc.require("style").detect(doc_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"no style result for document {doc_id!r}")
+    return StyleResponse.model_validate(result)
+
+
+@router.put("/{doc_id}/style", response_model=StyleResponse)
+async def set_style(request: Request, doc_id: str, payload: StyleSelection) -> StyleResponse:
+    svc = services(request)
+    result = await svc.require("style").select(doc_id, payload.style_id)
+    return StyleResponse.model_validate(result)
+
+
+@router.get("/{doc_id}/export.tex", response_class=PlainTextResponse)
+async def export_latex(request: Request, doc_id: str, version: int | None = None) -> PlainTextResponse:
+    svc = services(request)
+    document = await load_document(svc, doc_id, version)
+    latex = await svc.require("exporter").to_latex(document)
+    return PlainTextResponse(
+        latex,
+        media_type="application/x-tex",
+        headers={"Content-Disposition": f'attachment; filename="{doc_id}-v{document.version}.tex"'},
+    )
+
+
+__all__ = ["router"]
