@@ -200,6 +200,37 @@ including ones you expect to be fabricated; those become known-absent and `has()
 `git add -A` will sweep up another agent's half-finished files. Stage only paths you own and
 check `git status --short` before committing.
 
+2026-08-15 · F1 · The hero engraving cannot go in whole, and must not go in as SVG
+`hero-plate.svg` is a 10MB full-colour trace: 64,513 paths, 29,285 distinct fills. Two problems.
+(1) **Its centre violates the composition rule** — 21,096 paths and 3.0MB of ink sit in the middle
+48%, exactly where design-system.md §1 demands clean ivory. Only the left/right thirds are usable.
+(2) **Traced SVG is the wrong format for it.** Even after culling, each margin band was ~800KB
+gzipped and 7–20k DOM nodes; the weight is the geometry, so quantizing can't fix it. The same art
+at display size is **~170KB AVIF**. Hand-drawn SVG is still right for fleurons and seals — this
+applies to photographic engraving detail only. Pipeline + derivation: `apps/web/scripts/build-plates.md`.
+
+2026-08-15 · F1 · Only cull *small* paths from a trace — never large ones
+The trace relies on painter order: a dark base rect overpainted by a large ivory ground shape.
+Culling by bounding-box area at both ends (to save weight) dropped both and left flat dark slabs
+across the foliage. Looked like a colour-quantization bug; wasn't.
+
+2026-08-15 · F1 · Tailwind purges `@layer components` rules whose class names are built at runtime
+`className={`plate--${side}`}` means the scanner never sees the literal `plate--left`, so the rule
+is stripped from the build and the element renders with no background — silently, no error. Put
+such CSS **outside** `@layer` (plain CSS isn't purged), or write the full class names statically.
+
+2026-08-15 · F1 · A `fixed` box with only vertical insets collapses to zero width
+`fixed inset-y-0` + a child at `right-0` anchors the child to x=0, so it renders off the left edge
+of the screen. Needs `inset-0`. Cost 20 minutes because the left-hand plate looked perfect.
+
+2026-08-15 · F1 · citation.js ships no types, and pnpm 11 moved build approvals
+`@citation-js/core` 0.7 has no `.d.ts`; `apps/web/src/types/citation-js.d.ts` declares only the
+verified surface — `plugins.config.get('@csl')` exposes `templates`/`locales` registers with
+`.add(id, xml)`. Register the **locale** before any style or rendering throws. Separately: pnpm 11
+no longer reads `pnpm.onlyBuiltDependencies` from package.json, and only reads
+`pnpm-workspace.yaml` **if that file declares a `packages:` key** — without it, `pnpm install`
+exits 1 on the ignored-builds warning, which breaks `pnpm dev`.
+
 ---
 
 ## 5. Interface requests & blockers
@@ -224,6 +255,35 @@ year)`, in ADR-001's order. Each returns a `SourceRecord` already written to `so
 empty list, and it is cached so a bibliography of unresolvable references does not re-spend the
 rate limit on every run. Use `batch_hydrate()` on S2 for bulk (500/call); Crossref has no batch
 endpoint and its `batch_hydrate` loops, so prefer S2 there. · 2026-08-15
+
+[OPEN] F1 → B3 · HTTP surface for the five screens · The frontend is built against the envelopes in
+`apps/web/src/lib/api/types.ts` and the interface in `.../api/client.ts` (Appendix A freezes the
+domain models but not the wire surface). Every screen runs on typed fixtures of exactly those
+shapes meanwhile, so wiring up is a base-URL change. Proposed: `POST /documents` (multipart) →
+`{doc_id, version}`; `GET /documents/{id}/parse` → `{document, references[], orphan_markers[],
+counts, style}`; `POST /documents/{id}/style`; `GET /sources/{source_id}`; `POST
+/documents/{id}/review` → `{job_id}`; `GET /reviews/{job_id}/stream` (SSE: `progress` / `finding` /
+`done` / `error`); `POST /documents/{id}/commands` → `{plan_id, changes[], rejected[],
+orphaned_anchors[]}`; `POST /documents/{id}/changes/{change_id}/(approve|reject)`; `POST
+/documents/{id}/anchors/{anchor_id}/resolve`; `GET /documents/{id}/export/manifest`; `GET
+/documents/{id}/export.tex`. Rename freely — tell me and I'll follow. Three specific asks:
+(1) **`/health` should answer `{missing_keys: [...]}` even when misconfigured** if the process can
+stay up that far. HR-2 aborts startup, so the honest failure normally reads as connection-refused
+and the config screen can only say "unreachable" instead of naming the missing vars. If that's
+impossible, say so and I'll drop the `config_error` branch.
+(2) **CORS on the SSE endpoint** — `EventSource` connects to FastAPI directly; proxying through
+Next buffers the stream (§3) and would defeat ADR-014.
+(3) **Rejected operations need their kernel reasons on the wire** (`rejected[].reasons` plus
+`retries_spent`). HR-3 means the UI shows *why* the kernel refused, not just that it did. · 2026-08-15
+
+[OPEN] F1 → B1 · FYI, not a request: `apps/web/scripts/sync-csl-styles.mjs` copies
+`packages/csl-styles/*.csl` into the web app's static output on predev/prebuild so citation.js and
+Pandoc read byte-identical files (HR-4), hashing each into `styles.json` so drift is detectable.
+It reads the package read-only and fails the build if it's absent. Nothing in `packages/` is
+modified and adding a style there needs no frontend change. All six CP-3 styles render correctly
+through citeproc — verified IEEE `[1] Y. Tay, M. Dehghani, and D. Bahri, "Efficient Transformers: A
+Survey," ...` vs APA `Tay, Y., Dehghani, M., & Bahri, D. (2022). ...` from the same CSL-JSON.
+· 2026-08-15
 
 ---
 
