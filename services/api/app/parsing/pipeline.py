@@ -18,22 +18,36 @@ GROBID and the UI fails loudly instead of shipping as a shorter bibliography.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from app.core.contracts import ConfidenceTier, Document, ParsedReference
-from app.core.errors import StyleDetectionFailure
+from app.core.contracts import ConfidenceTier, Document, ParsedReference, ParseFailure
+from app.core.errors import ConfigurationError, StyleDetectionFailure
 from app.ir import ids
 from app.ir.traversal import iter_anchors
 from app.parsing.arbiter import Arbiter, Reconciliation
 from app.parsing.grobid import GrobidClient
 from app.parsing.models import ParsedDocument, TierCounts
 from app.parsing.references import references_from_tei
+from app.parsing.registry import registry
 from app.parsing.repair import ReferenceSegmenter, RepairOutcome, repair_references
 from app.parsing.style import StyleDetectionResult, detect_style
 from app.parsing.tei import parse_tei, tei_to_ir
 
-__all__ = ["IngestResult", "ingest_tei", "ingest_pdf", "attach_source_ids"]
+__all__ = [
+    "IngestResult",
+    "ingest_tei",
+    "ingest_pdf",
+    "attach_source_ids",
+    "IngestPipeline",
+    "get_ingest_pipeline",
+    "reset_ingest_pipeline",
+    "build_parse_report",
+]
 
 
 @dataclass
@@ -110,19 +124,28 @@ async def ingest_tei(
     styles_dir: Path | None = None,
     ambiguity_margin: float = 0.05,
     detect_citation_style: bool = True,
+    on_stage: Callable[[str], None] | None = None,
 ) -> IngestResult:
     """Everything downstream of GROBID. Separated so it is testable without a sidecar."""
+
+    def _stage(name: str) -> None:
+        if on_stage is not None:
+            on_stage(name)
+
     parsed = tei_to_ir(tei_xml, doc_id=doc_id)
+    _stage("references")
     references = references_from_tei(parse_tei(tei_xml), threshold=repair_threshold)
 
     repairs: list[RepairOutcome] = []
     if segmenter is not None:
+        _stage("repair")
         references, repairs = await repair_references(
             references, segmenter, threshold=repair_threshold
         )
 
     reconciliations: list[Reconciliation] = []
     if arbiter is not None:
+        _stage("arbiter")
         references, reconciliations = await arbiter.reconcile(references)
 
     attach_source_ids(parsed, references)
@@ -136,6 +159,7 @@ async def ingest_tei(
     )
 
     if detect_citation_style:
+        _stage("style")
         markers = [
             a.anchor.original_marker_text or "" for a in iter_anchors(parsed.document)
         ]
@@ -183,3 +207,220 @@ async def ingest_pdf(
         styles_dir=styles_dir,
         ambiguity_margin=ambiguity_margin,
     )
+
+
+# ---------------------------------------------------------------------------
+# Service surface for the API layer (B3's `get_ingest_pipeline`, memory.md §5).
+# ---------------------------------------------------------------------------
+
+
+class IngestPipeline:
+    """Runs ingests in the background and remembers what they produced.
+
+    `providers` is required unless `allow_unreconciled=True` is passed explicitly. That
+    is deliberate: without the arbiter every reference comes back `parsed_unresolved`,
+    which renders as a paper whose bibliography we could not verify — indistinguishable,
+    to a reader, from a paper whose references are genuinely unresolvable. A caller may
+    opt into that (tests do), but it never happens by omission (HR-3 / ADR-010).
+    """
+
+    def __init__(
+        self,
+        *,
+        grobid: GrobidClient,
+        repair_threshold: float,
+        styles_dir: Path | None = None,
+        ambiguity_margin: float = 0.05,
+        arbiter: Arbiter | None = None,
+        segmenter: ReferenceSegmenter | None = None,
+        store_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+        allow_unreconciled: bool = False,
+    ) -> None:
+        if arbiter is None and not allow_unreconciled:
+            raise ConfigurationError(
+                "IngestPipeline was constructed without an arbiter. Every reference would "
+                "come back unresolved, which reads to a user as a paper full of unverifiable "
+                "references rather than as missing configuration. Pass `arbiter=`, or pass "
+                "`allow_unreconciled=True` to state that you meant it."
+            )
+        self._grobid = grobid
+        self._repair_threshold = repair_threshold
+        self._styles_dir = styles_dir
+        self._ambiguity_margin = ambiguity_margin
+        self._arbiter = arbiter
+        self._segmenter = segmenter
+        self._store_factory = store_factory
+        self._registry = registry()
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    # -- API surface -------------------------------------------------------
+
+    def enqueue(self, doc_id: str, filename: str, payload: bytes) -> str:
+        """Start an ingest in the background and return its job id."""
+        job_id = ids.new_id("job")
+        self._registry.create(doc_id, job_id, filename)
+        task = asyncio.create_task(self._run(doc_id, filename, payload))
+        # Hold a reference: a task that nothing holds can be garbage collected
+        # mid-flight, and the ingest would vanish with no error anywhere.
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return job_id
+
+    def status(self, doc_id: str) -> dict[str, Any] | None:
+        record = self._registry.get(doc_id)
+        return record.status() if record else None
+
+    def result(self, doc_id: str) -> IngestResult | None:
+        record = self._registry.get(doc_id)
+        return record.result if record else None
+
+    def record_failure(self, doc_id: str, message: str) -> None:
+        self._registry.fail(doc_id, message)
+
+    def parse_report(self, doc_id: str) -> dict[str, Any]:
+        """References, orphan markers and tier counts for the parse inspector.
+
+        Raises if the ingest is not finished. Returning an empty report for a running
+        job would render as "this paper has no references".
+        """
+        record = self._registry.get(doc_id)
+        if record is None:
+            raise ParseFailure(f"no ingest is known for document {doc_id!r}")
+        if record.state == "failed":
+            raise ParseFailure(f"ingest failed for {doc_id!r}: {record.error}")
+        if record.result is None:
+            raise ParseFailure(
+                f"ingest for {doc_id!r} is still {record.state} at stage {record.stage!r}; "
+                "poll status until it is complete"
+            )
+        return build_parse_report(record.result)
+
+    # -- internals ---------------------------------------------------------
+
+    async def _run(self, doc_id: str, filename: str, payload: bytes) -> None:
+        try:
+            self._registry.advance(doc_id, "grobid")
+            tei_xml = await self._grobid.process_fulltext(payload, filename=filename)
+
+            self._registry.advance(doc_id, "tei_to_ir")
+            result = await ingest_tei(
+                tei_xml,
+                doc_id=doc_id,
+                repair_threshold=self._repair_threshold,
+                segmenter=self._segmenter,
+                arbiter=self._arbiter,
+                styles_dir=self._styles_dir,
+                ambiguity_margin=self._ambiguity_margin,
+                on_stage=lambda stage: self._registry.advance(doc_id, stage),
+            )
+
+            self._registry.advance(doc_id, "persist")
+            version = await self._persist(result.document)
+            self._registry.complete(doc_id, result, version)
+        except Exception as exc:  # noqa: BLE001 - recorded on the job, then visible via status()
+            # Not swallowed: the job goes to `failed` with the reason attached, which is
+            # what /parse-status reports and what the UI shows the user (HR-3).
+            self._registry.fail(doc_id, f"{type(exc).__name__}: {exc}")
+
+    async def _persist(self, document: Document) -> int:
+        if self._store_factory is None:
+            # Nothing to persist into — the caller is running in-memory (tests). The
+            # version still comes from the document itself rather than being invented.
+            return document.version
+        async with self._store_factory() as store:
+            stored = await store.create(document)
+            return stored.version
+
+
+def build_parse_report(result: IngestResult) -> dict[str, Any]:
+    """The parse-inspector payload: every reference, every orphan, and the tier counts."""
+    counts = result.tier_counts()
+    return {
+        "references": [
+            {
+                **reference.model_dump(mode="json"),
+                "anchor_ids": result.parsed.anchors_for_reference(reference.ref_id),
+                "coordinates": [
+                    box.__dict__ for box in result.parsed.coordinates.get(reference.ref_id, [])
+                ],
+            }
+            for reference in result.references
+        ],
+        "orphan_markers": [
+            {
+                "anchor_id": orphan.anchor_id,
+                "marker_text": orphan.marker_text,
+                "target": orphan.target,
+                "section_id": orphan.section_id,
+                "span_id": orphan.span_id,
+                "page": orphan.page,
+                "reason": orphan.reason,
+            }
+            for orphan in result.parsed.orphan_markers
+        ],
+        "counts": {
+            "total_detected": counts.total_detected,
+            "resolved": counts.resolved,
+            "parsed_unresolved": counts.parsed_unresolved,
+            "low_confidence": counts.low_confidence,
+            "quarantined": counts.quarantined,
+            "orphan_marker": counts.orphan_marker,
+            "accounted_for": counts.accounted_for,
+        },
+        "reconciliations": [
+            {
+                "ref_id": r.ref_id,
+                "accepted": r.accepted,
+                "path": r.path,
+                "agreement_score": r.agreement.score if r.agreement else None,
+                "matched_on": r.agreement.matched_on if r.agreement else None,
+                "source_id": r.source_id,
+                "provisional_csl": r.provisional_csl,
+                "notes": r.notes,
+                "provider_errors": r.provider_errors,
+                "fully_checked": r.fully_checked,
+            }
+            for r in result.reconciliations
+        ],
+        "style_error": result.style_error or None,
+    }
+
+
+def get_ingest_pipeline(
+    settings: Any,
+    *,
+    grobid: GrobidClient | None = None,
+    arbiter: Arbiter | None = None,
+    segmenter: ReferenceSegmenter | None = None,
+    store_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+    allow_unreconciled: bool = False,
+) -> IngestPipeline:
+    """Factory for the API layer. One pipeline per process.
+
+    `arbiter` must be supplied by the caller: building it needs provider adapters, whose
+    construction (cache, source store, limiters) belongs to `app/providers/` and whose
+    wiring belongs to the API layer. Reaching across to assemble them here would couple
+    parsing to B2's constructor signatures for no benefit.
+    """
+    global _PIPELINE
+    if _PIPELINE is None:
+        _PIPELINE = IngestPipeline(
+            grobid=grobid or GrobidClient(),
+            repair_threshold=settings.repair_confidence_threshold,
+            styles_dir=settings.csl_styles_dir,
+            ambiguity_margin=settings.style_ambiguity_margin,
+            arbiter=arbiter,
+            segmenter=segmenter,
+            store_factory=store_factory,
+            allow_unreconciled=allow_unreconciled,
+        )
+    return _PIPELINE
+
+
+def reset_ingest_pipeline() -> None:
+    """Drop the cached pipeline. Tests only."""
+    global _PIPELINE
+    _PIPELINE = None
+
+
+_PIPELINE: IngestPipeline | None = None

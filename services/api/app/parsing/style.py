@@ -30,13 +30,22 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from rapidfuzz.distance import Levenshtein
 
 from app.core.contracts import ParsedReference
 from app.core.errors import StyleDetectionFailure
 from app.export.pandoc import render_bibliography_entries
-from app.export.styles import MarkerFamily, StyleInfo, all_styles, style_path, styles_for_family
+from app.export.styles import (
+    SHORTLIST,
+    MarkerFamily,
+    StyleInfo,
+    all_styles,
+    style_path,
+    styles_for_family,
+)
+from app.ir.traversal import iter_anchors as _iter_anchors
 
 __all__ = [
     "MarkerFamilyVerdict",
@@ -45,6 +54,9 @@ __all__ = [
     "classify_marker_family",
     "detect_style",
     "DEFAULT_SAMPLE_SIZE",
+    "StyleService",
+    "get_style_service",
+    "reset_style_service",
 ]
 
 # Style is uniform across a bibliography, so a sample settles it. Twelve entries is
@@ -242,3 +254,129 @@ def detect_style(
             + (f", ahead of {runner_up.style_id} by {margin:.3f}" if runner_up else "")
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Service surface for the API layer (B3's `get_style_service`, memory.md §5).
+# ---------------------------------------------------------------------------
+
+
+class StyleService:
+    """Style detection and selection for an already-ingested document.
+
+    `detect` re-scores from the ingest's reconciled references rather than caching the
+    first answer, so re-running after references have been repaired or re-arbitrated
+    reflects the better data. `select` records the user's choice — which is the required
+    path out of an `ambiguous` result, not an optional override.
+    """
+
+    def __init__(self, *, styles_dir: Path | None, ambiguity_margin: float) -> None:
+        self._styles_dir = styles_dir
+        self._ambiguity_margin = ambiguity_margin
+        self._chosen: dict[str, str] = {}
+
+    def detect(self, doc_id: str) -> dict[str, Any]:
+        from app.parsing.registry import registry
+
+        record = registry().get(doc_id)
+        if record is None or record.result is None:
+            raise StyleDetectionFailure(
+                f"no completed ingest for document {doc_id!r}; style cannot be detected before "
+                "the references exist"
+            )
+
+        result = record.result
+        markers = [
+            anchor.anchor.original_marker_text or ""
+            for anchor in _iter_anchors(result.document)
+        ]
+        detection = detect_style(
+            result.references,
+            markers,
+            styles_dir=self._styles_dir,
+            ambiguity_margin=self._ambiguity_margin,
+        )
+        return self._payload(detection, chosen=self._chosen.get(doc_id))
+
+    def select(self, doc_id: str, style_id: str) -> dict[str, Any]:
+        """Record the user's choice. Validates it against the shortlist first."""
+        if style_id not in SHORTLIST:
+            raise StyleDetectionFailure(
+                f"unknown style_id {style_id!r}. Known styles: {', '.join(sorted(SHORTLIST))}"
+            )
+        self._chosen[doc_id] = style_id
+
+        from app.parsing.registry import registry
+
+        record = registry().get(doc_id)
+        if record is not None and record.result is not None:
+            metadata = record.result.document.metadata
+            metadata.style_id = style_id
+            # A chosen style is certain by construction; it is the user's answer, not a
+            # measurement, and reporting a similarity score for it would misdescribe it.
+            metadata.style_ambiguous = False
+            metadata.style_confidence = None
+
+        return {
+            "style_id": style_id,
+            "score": None,
+            "ambiguous": False,
+            "chosen_by_user": True,
+            "shortlist": _shortlist_payload(),
+        }
+
+    def _payload(self, detection: StyleDetectionResult, *, chosen: str | None) -> dict[str, Any]:
+        return {
+            "style_id": chosen or detection.style_id,
+            "score": detection.score,
+            "similarity": detection.similarity,
+            "ambiguous": detection.ambiguous and chosen is None,
+            "chosen_by_user": chosen is not None,
+            "margin": detection.margin,
+            "compared": detection.compared,
+            "reason": detection.reason,
+            "marker_family": {
+                "family": detection.marker_family.family,
+                "numeric": detection.marker_family.numeric,
+                "author_date": detection.marker_family.author_date,
+                "unclassifiable": detection.marker_family.unclassifiable,
+                "confidence": detection.marker_family.confidence,
+            },
+            "candidates": [
+                {
+                    "style_id": c.style_id,
+                    "title": c.title,
+                    "score": c.distance,
+                    "similarity": c.similarity,
+                    "compared": c.compared,
+                }
+                for c in detection.candidates
+            ],
+            "shortlist": _shortlist_payload(),
+        }
+
+
+def _shortlist_payload() -> list[dict[str, Any]]:
+    return [
+        {"style_id": s.style_id, "title": s.title, "family": s.family}
+        for s in all_styles()
+    ]
+
+
+def get_style_service(settings: Any) -> StyleService:
+    global _STYLE_SERVICE
+    if _STYLE_SERVICE is None:
+        _STYLE_SERVICE = StyleService(
+            styles_dir=settings.csl_styles_dir,
+            ambiguity_margin=settings.style_ambiguity_margin,
+        )
+    return _STYLE_SERVICE
+
+
+def reset_style_service() -> None:
+    """Drop the cached service. Tests only."""
+    global _STYLE_SERVICE
+    _STYLE_SERVICE = None
+
+
+_STYLE_SERVICE: StyleService | None = None

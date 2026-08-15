@@ -1,0 +1,113 @@
+# answerthat — api, web, grobid, postgres, redis.
+#
+#   cp .env.example .env    # fill in both keys first; the api will not start without them
+#   docker compose up
+#
+# Two things worth knowing before the first run:
+#
+# * The GROBID image is 1-3 GB and takes 30-60s to become healthy after it starts. Its
+#   healthcheck below has a long start_period for exactly that reason, and the api waits
+#   on it rather than treating early connection refusals as a failure.
+# * packages/csl-styles/ is mounted into *both* api and web. One copy of each .csl file,
+#   read by Pandoc on the backend and citation.js in the frontend, or preview and export
+#   drift apart (HR-4).
+
+name: answerthat
+
+services:
+  api:
+    build:
+      context: ./services/api
+    environment:
+      # No defaults for these two. An unset key must abort startup, and a compose-level
+      # default would quietly supply the empty string that HR-2 exists to reject.
+      SEMANTIC_SCHOLAR_API_KEY: ${SEMANTIC_SCHOLAR_API_KEY}
+      OPENALEX_API_KEY: ${OPENALEX_API_KEY}
+      OPENALEX_MAILTO: ${OPENALEX_MAILTO}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GROBID_URL: http://grobid:8070
+      DATABASE_URL: postgresql+asyncpg://answerthat:answerthat@postgres:5432/answerthat
+      REDIS_URL: redis://redis:6379/0
+      CSL_STYLES_DIR: /srv/csl-styles
+    volumes:
+      - ./services/api/app:/srv/api/app
+      - ./packages/csl-styles:/srv/csl-styles:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      grobid:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      context: ./apps/web
+    environment:
+      # The browser talks to the API directly. Do not proxy the SSE stream through a
+      # Next.js route — buffering there makes streaming look broken.
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    volumes:
+      - ./packages/csl-styles:/srv/csl-styles:ro
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - api
+
+  grobid:
+    # The CRF image, not the full deep-learning one: ADR-012 keeps GROBID's own default
+    # of linear-chain CRF, and the DL image is several GB larger for no accuracy gain on
+    # these tasks.
+    image: lfoppiano/grobid:0.8.1
+    environment:
+      JAVA_OPTS: "-Xmx4g"
+    ports:
+      - "${GROBID_PORT:-8070}:8070"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8070/api/isalive || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      # Model loading on a cold start. Anything shorter and compose declares the
+      # container unhealthy while it is still working correctly.
+      start_period: 90s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: answerthat
+      POSTGRES_PASSWORD: answerthat
+      POSTGRES_DB: answerthat
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Overridable: a developer with a local postgres already on 5432 sets
+      # POSTGRES_PORT=5433 rather than editing this file. The api reaches postgres over
+      # the compose network regardless; this mapping is only for psql from the host.
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U answerthat -d answerthat"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
