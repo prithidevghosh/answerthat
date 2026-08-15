@@ -1,0 +1,9 @@
+node_modules/
+.next/
+next-env.d.ts
+.env*.local
+
+# Build artifact: synced from packages/csl-styles by scripts/sync-csl-styles.mjs
+# on predev/prebuild. The shared package is the source of truth (HR-4).
+public/csl/*.csl
+public/csl/styles.json

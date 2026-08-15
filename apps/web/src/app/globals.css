@@ -1,0 +1,178 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Tokens — transcribed from design/design-system.md §2. Single source of truth.
+   --------------------------------------------------------------------------- */
+:root {
+  /* Ground */
+  --paper: #f7f3ea;
+  --paper-deep: #efe8da;
+  --plate: #ffffff;
+
+  /* Inks — semantic, not decorative */
+  --ink-cobalt: #1b3a6b;
+  --ink-cobalt-lt: #4a6ea0;
+  --ink-sepia: #8a6a3d;
+  --ink-sanguine: #9b3b2f;
+  --ink-verdigris: #2f6b5f;
+
+  /* Text */
+  --text-primary: #16202e;
+  --text-secondary: #55606e;
+  --text-muted: #8a8f98;
+
+  /* Lines — engraving hairlines, never heavy borders */
+  --rule-hair: rgba(27, 58, 107, 0.18);
+  --rule-strong: rgba(27, 58, 107, 0.38);
+
+  /* Laid-paper grain: fractal noise at 4% — design-system.md §4 hard ceiling.
+     Generated, not an asset, so it costs no request and stays crisp at any DPR. */
+  --paper-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.04'/%3E%3C/svg%3E");
+
+  /* Type — wired to next/font in layout.tsx */
+  --font-display: var(--font-cormorant), 'EB Garamond', Georgia, serif;
+  --font-body: var(--font-source-serif), Charter, Georgia, serif;
+  --font-ui: var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--paper);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 1rem;
+    line-height: 1.65;
+    /* Laid-paper grain. design-system.md §4 caps this at 4%; it is texture, not
+       ornament, so it is the one thing allowed to sit under the content column.
+       Tested against a full findings list, not an empty screen. */
+    background-image: var(--paper-grain);
+    background-repeat: repeat;
+    background-size: 180px 180px;
+  }
+
+  /* Accessibility beats aesthetics — §7 rule 1. */
+  :focus-visible {
+    outline: 2px solid var(--ink-cobalt);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Never rely on the UA's faint default when a control is reached by keyboard. */
+  [data-focus-ring]:focus-visible {
+    outline: 2px solid var(--ink-cobalt);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: rgba(27, 58, 107, 0.16);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    color: var(--text-primary);
+  }
+
+  /* Controls are sans, so they never masquerade as manuscript. */
+  button,
+  input,
+  select,
+  textarea,
+  label {
+    font-family: var(--font-ui);
+  }
+
+  code,
+  pre,
+  samp {
+    font-family: var(--font-mono);
+  }
+}
+
+@layer components {
+  /* The calm centre. Ornament stays outside it, always. */
+  .content-column {
+    width: 100%;
+    max-width: 1100px;
+    margin-inline: auto;
+    padding-inline: 24px;
+  }
+
+  /* A finding is prose. */
+  .measure {
+    max-width: 68ch;
+  }
+
+  /* Hairlines, not borders. */
+  .hairline {
+    border: 1px solid var(--rule-hair);
+  }
+
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 8px;
+    z-index: 100;
+    background: var(--plate);
+    color: var(--ink-cobalt);
+    padding: 12px 16px;
+    border: 1px solid var(--rule-strong);
+    font-family: var(--font-ui);
+    font-size: 0.875rem;
+  }
+  .skip-link:focus {
+    left: 16px;
+  }
+}
+
+/* §6 — prefers-reduced-motion removes all of it. No exceptions. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Margin plates.
+
+   Deliberately OUTSIDE @layer components: these class names are composed at
+   runtime (`plate--${side}`), so Tailwind's scanner never sees the literal
+   strings and would purge them from a layer. Plain CSS is not purged.
+
+   background-image is declared twice on purpose — the plain url() is the floor
+   for browsers without typed image-set (Safari < 17); the image-set overrides
+   it everywhere else and serves AVIF. See scripts/build-plates.md.
+   --------------------------------------------------------------------------- */
+.plate {
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+.plate--left {
+  background-image: url('/ornament/plate-left.webp');
+  background-image: image-set(
+    url('/ornament/plate-left.avif') type('image/avif'),
+    url('/ornament/plate-left.webp') type('image/webp')
+  );
+}
+.plate--right {
+  background-image: url('/ornament/plate-right.webp');
+  background-image: image-set(
+    url('/ornament/plate-right.avif') type('image/avif'),
+    url('/ornament/plate-right.webp') type('image/webp')
+  );
+}

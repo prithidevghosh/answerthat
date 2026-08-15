@@ -1,0 +1,11 @@
+packages:
+  - .
+
+# pnpm 11 reads build approvals from here (no longer from package.json).
+# sharp is unused — next.config.ts sets images.unoptimized — and unrs-resolver
+# backs eslint's import resolver. Both ship native postinstall builds;
+# approving them explicitly keeps `pnpm install` from exiting non-zero, which
+# otherwise fails the dependency check that `pnpm dev` runs before starting.
+onlyBuiltDependencies:
+  - sharp
+  - unrs-resolver
