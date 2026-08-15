@@ -31,7 +31,12 @@ from typing import Any
 from app.core.contracts import Claim, Document, Section, Span
 from app.review.llm import StructuredLLM, object_schema
 
-__all__ = ["ClaimExtractor", "CLAIM_SYSTEM_PROMPT", "normalize_for_compare"]
+__all__ = [
+    "ClaimExtractor",
+    "CLAIM_SYSTEM_PROMPT",
+    "normalize_for_compare",
+    "get_claim_extractor",
+]
 
 _WS = re.compile(r"\s+")
 
@@ -248,3 +253,27 @@ def _build_prompt(section_title: str, spans: list[Span]) -> str:
         lines.append("</span>")
         lines.append("")
     return "\n".join(lines)
+
+
+_extractor: ClaimExtractor | None = None
+
+
+def get_claim_extractor(settings: Any = None) -> ClaimExtractor:
+    """Process-wide claim extractor — the `ClaimExtractor` port B3's edit path calls.
+
+    Defined here rather than in `composition.py` because B3's Interface Request names
+    this module path. It shares the one `StructuredLLM`, so token accounting stays in
+    one place.
+    """
+    global _extractor
+    if _extractor is None:
+        from app.review.composition import get_extractor
+
+        _extractor = get_extractor(settings)
+    return _extractor
+
+
+def reset() -> None:
+    """Tests only."""
+    global _extractor
+    _extractor = None
