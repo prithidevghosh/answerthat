@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 
 from sqlalchemy import MetaData
@@ -64,7 +64,7 @@ class Base(DeclarativeBase):
 
 def utcnow() -> datetime:
     """Timezone-aware UTC now. Use this, never `datetime.utcnow()`."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 @lru_cache(maxsize=1)
