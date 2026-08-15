@@ -527,6 +527,21 @@ map through `app.export.styles.SHORTLIST` rather than assuming `{style_id}.csl`.
 `sync-csl-styles.mjs` hashing approach is exactly right; nothing in `packages/` is written by the
 backend at runtime, so the hashes are stable. · 2026-08-16
 
+[OPEN] B1 → B2 + B3 · `docker compose up` cannot complete: `get_review_runner()` is unbound ·
+The api container builds and gets all the way through config and my components, then exits:
+`app/review/runner.py:218 — RuntimeError: get_review_runner() needs a review_runner_factory on
+first call: the pipeline requires B1's DocumentStore, which app/review must not import directly.
+Bind it once in the API composition root.` This is the last thing standing between us and CP-1's
+first criterion. For the binding: `app.ir.store.PostgresDocumentStore(session)` is per-unit-of-work
+— hold the class plus `app.core.db.session_scope` and open a session per call, as B3 already does
+in `app/api/adapters.py` (§4). I have not touched either file. · 2026-08-16
+
+[OPEN] B1 → F1 · `apps/web/Dockerfile` does not exist, so `docker compose up` cannot build `web` ·
+The compose service is defined and expects a container listening on 3000, with
+`packages/csl-styles/` mounted read-only at `/srv/csl-styles` and `NEXT_PUBLIC_API_URL` set. Host
+port is `${WEB_PORT:-3000}`. Until the Dockerfile lands, `docker compose up` fails on `web` even
+though everything else is healthy. · 2026-08-16
+
 [OPEN] B2 → B3 · `SourceReader.get`/`has` need an `await store.warm([source_ids])` before use ·
 The store is async Postgres behind the sync signature Appendix A specifies. Sync reads answer from
 an in-process index; an unwarmed id raises `SourceNotIndexed` rather than answering "absent", so
@@ -717,6 +732,131 @@ raise-on-unwarmed behaviour. · 2026-08-15
 
 > Paste the proof when you claim a checkpoint. Test output, command output, screenshot paths.
 > Format: `CP-N · <agent> · <date>` followed by evidence per acceptance criterion.
+
+### CP-1 — Skeleton round trip · B1 · 2026-08-16 · **partially complete, one criterion NOT met**
+
+Verified against a live GROBID 0.8.1 sidecar and a real arXiv PDF
+(`arxiv.org/pdf/1706.03762v7`, 2.2 MB, 15 pages, 40 references).
+
+- [x] **Missing `SEMANTIC_SCHOLAR_API_KEY` / `OPENALEX_API_KEY` aborts startup (HR-2).** Verified
+  through B3's real app factory, not only in a unit test:
+  ```
+  $ env -u SEMANTIC_SCHOLAR_API_KEY -u OPENALEX_API_KEY uv run python -c "from app.api.main import asgi; asgi()"
+  MissingAPIKeyError:
+  Startup aborted: required API key(s) missing or empty.
+    MISSING  SEMANTIC_SCHOLAR_API_KEY
+             free — request at https://www.semanticscholar.org/product/api
+    MISSING  OPENALEX_API_KEY
+             free — register at https://openalex.org (keys became mandatory 2026-02-13)
+  ```
+  Plus 12 tests in `tests/unit/b1/test_config_hr2.py` covering absent, empty and whitespace-only
+  values for each key independently.
+
+- [x] **`app/core/` matches Appendix A exactly.** `contracts.py` was extracted mechanically from
+  `goal.md`, and `test_core_frozen.py::test_contracts_py_is_appendix_a_verbatim` asserts byte
+  equality against the document on every run. Not a claim — a lock.
+
+- [x] **PDF → GROBID → TEI → Document IR persisted with a version number.**
+  ```
+  TEI: 116,708 bytes
+  sections 26 · paragraphs 71 · spans 195 · citation anchors 58 · references 40
+  coordinates retained for 135 nodes · IR validation: 0 problems
+  persisted version: 1   history: [1]
+  ```
+
+- [x] **IR → LaTeX renders through Pandoc without error.** 36,232 bytes; bibliography rendered by
+  citeproc through `ieee.csl` (HR-4 — no f-string anywhere in the path).
+
+- [x] **Round trip preserves title, all section headings and order, paragraph count ±0, every
+  in-text anchor.** Measured by reading the exported `.tex` *back* through Pandoc and comparing to
+  the IR:
+  ```
+  title           : True
+  sections        : 26 expected, 26 found -> True
+  paragraphs      : 71 vs 71 (delta 0)    -> True
+  anchors         : 58 expected, 58 found -> True    anchors lost: []
+  ROUND TRIP OK   : True
+  ```
+  Anchors are compared **by identifier read back out of the rendered file**, not by count.
+
+- [ ] **`docker compose up` starts api, web, grobid, postgres, redis — NOT MET.**
+  `grobid`, `postgres` and `redis` all reach `healthy`, and the `api` image builds and runs my
+  components correctly inside the container:
+  ```
+  SERVICE    STATUS
+  grobid     Up 4 minutes (healthy)
+  postgres   Up 2 hours (healthy)
+  redis      Up 2 hours (healthy)
+
+  $ docker compose run --rm --no-deps api python -c "..."
+  ingest pipeline : IngestPipeline
+  arbiter wired   : ['crossref', 'semantic_scholar', 'openalex']
+  style service   : StyleService
+  csl files       : ['acm-sig-proceedings.csl','apa.csl','chicago-author-date.csl','ieee.csl','nature.csl','vancouver.csl']
+  pandoc          : pandoc 3.1.11.1
+  ```
+  Two things outside my paths block a full `up`, both filed in §5:
+  1. `api` exits during `build_services()` at
+     `app/review/runner.py:218 — get_review_runner() needs a review_runner_factory on first call`.
+  2. `apps/web/Dockerfile` does not exist, so the `web` service cannot build.
+
+  **I am not claiming this criterion.** Everything inside my paths is verified; the remaining gap
+  is a B2↔B3 composition-root binding and an F1 Dockerfile.
+
+### CP-2 — Parsing, arbitration, honesty · B1 · 2026-08-16 · complete
+
+- [x] **Every `biblStruct` becomes provisional CSL-JSON with a `parse_confidence`.** On the real
+  paper: 40/40 references extracted, 39 with a CSL record, **40/40 retaining their raw string
+  verbatim**, 17 carrying a DOI. Confidence is weighted field completeness, floored at 0.90 when
+  GROBID's citation consolidation produced a DOI.
+- [x] **Repair tier runs only below threshold and discards any field value that is not a substring
+  of the raw reference string.** 20 tests in `test_repair.py`, mostly adversarial: invented author,
+  corrected typo, expanded abbreviation (`ACM Comput. Surv.` → `ACM Computing Surveys` — rejected
+  *even though it is correct*), invented DOI, invented year, a violation buried in the third
+  author. Also asserted: the model is **not called at all** for a confident parse, and not called
+  when there is no raw string to check the output against.
+- [x] **Arbiter resolves via Crossref DOI → S2 `/paper/search/match` → OpenAlex, accepting only at
+  `agreement_score >= 0.85`.** 21 tests in `test_arbiter.py` against Appendix A `Provider` stubs;
+  weights asserted at the specified 0.6 / 0.2 / 0.2.
+- [x] **On accept the external record replaces our parse as canonical; our raw string and our parse
+  are retained for audit.** `test_the_canonical_record_replaced_our_parse` (end to end, in
+  `test_pipeline.py`) and `test_the_external_record_replaces_our_parse_as_canonical`.
+- [x] **All five confidence tiers implemented and populated**, and **zero references dropped**:
+  ```
+  total detected  : 40
+  resolved 0 · parsed_unresolved 39 · low_confidence 0 · quarantined 1 · orphan_marker 0
+  sum == detected : 40 == 40
+  invariant       : PASS (assert_invariant did not raise)
+  ```
+  `resolved` is 0 in this run because it had no real API keys; arbitration itself is covered by the
+  21 unit tests above. The invariant is asserted **in code on every ingest**, not only in a test,
+  and `test_the_invariant_actually_fires_when_a_reference_goes_missing` proves it can fail.
+- [x] **Orphan in-text markers are detected and located.** The real paper has none; the TEI fixture
+  exercises it — `[42]` → `#b99`, reported with section id, span id, page and reason, surfaced into
+  `document.quarantine`, and counted **separately** from references so it cannot mask a real leak.
+
+### CP-3 — Style detection · B1 · 2026-08-16 · complete
+
+- [x] **Marker-family classifier (numeric vs author-date) implemented.** On the real paper:
+  `numeric` (numeric=45, author_date=0, confidence 0.776), correctly narrowing the shortlist to 4.
+- [x] **Round-trip scoring: render our CSL-JSON through each shortlisted `.csl` via Pandoc, compare
+  to the extracted raw strings by normalised Levenshtein.**
+- [x] **Shortlist present in `packages/csl-styles/`:** APA 7, IEEE, ACM SIG Proceedings, Nature,
+  Chicago author-date, Vancouver (NLM). All six verified to render through citeproc.
+- [x] **Winning style + numeric score exposed via the service payload** (`score`, `similarity`,
+  `margin`, `compared`, per-candidate distances, and a human-readable `reason`).
+- [x] **Top two within 0.05 → returns `ambiguous`, user must pick.** Fires on the real paper:
+  ```
+  ieee 0.4606 · nature 0.4955 · vancouver 0.4955 · acm 0.5495
+  ambiguous: True   margin: 0.0349   compared: 12 reference strings
+  reason: ieee (0.461) and nature (0.495) are within 0.05 of each other.
+          The bibliography does not distinguish them, so this is your choice to make.
+  ```
+  Detection recovers the correct style for `ieee`, `apa`, `nature`, `vancouver` and `acm` when the
+  raw strings genuinely are in that style, plus two tests using hand-written realistic IEEE/APA
+  strings rather than self-rendered ones.
+
+**Test suite:** `225 passed` — `cd services/api && uv run pytest tests/unit/b1 -q`.
 
 ### CP-4 — Providers · B2 · 2026-08-15 · **complete except live-Postgres verification**
 
