@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
@@ -106,7 +106,7 @@ async def stream_review(request: Request, doc_id: str) -> EventSourceResponse:
                     break
                 try:
                     yield await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {"event": "heartbeat", "data": "{}"}
         finally:
             task.cancel()

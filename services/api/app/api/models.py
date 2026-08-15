@@ -146,7 +146,7 @@ def build_model_clients(settings: Any) -> tuple[Any, Any, Any]:
     if voyage_key:
         import voyageai  # noqa: PLC0415
 
-        embedder = VoyageEmbedder(voyageai.AsyncClient(api_key=voyage_key))
+        embedder: Any = VoyageEmbedder(voyageai.AsyncClient(api_key=voyage_key))
     else:
         embedder = HashingEmbedder()
 

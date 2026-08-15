@@ -197,11 +197,12 @@ def _bind_sources(services: Services, settings: Any) -> None:
 def _bind_documents(services: Services, settings: Any) -> None:
     try:
         from app.api.adapters import DocumentStoreAdapter
+        from app.core.db import session_scope
         from app.ir.store import PostgresDocumentStore
     except ImportError as exc:
         log.warning("documents unavailable: %s", exc)
         return
-    services.documents = DocumentStoreAdapter(PostgresDocumentStore(getattr(settings, "session", None)))
+    services.documents = DocumentStoreAdapter(PostgresDocumentStore, session_scope)
 
 
 def _bind_export(services: Services, settings: Any) -> None:

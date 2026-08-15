@@ -133,7 +133,7 @@ def strip_marker_leaks(text: str) -> tuple[str, list[str]]:
 def cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     if na == 0.0 or nb == 0.0:
@@ -181,7 +181,7 @@ class DetachTransformReattach:
                 raise RuntimeError(
                     f"embedder returned {len(vectors)} vectors for {len(needs_fingerprint)} sentences"
                 )
-            for detached_anchor, vector in zip(needs_fingerprint, vectors):
+            for detached_anchor, vector in zip(needs_fingerprint, vectors, strict=True):
                 detached_anchor.anchor.context_fingerprint = vector
 
         return " ".join(p for p in parts if p).strip(), detached

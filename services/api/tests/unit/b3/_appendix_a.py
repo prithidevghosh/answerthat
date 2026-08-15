@@ -57,4 +57,4 @@ def ensure_contracts_importable() -> None:
     import app.core  # noqa: F401  (namespace package, exists on disk)
 
     sys.modules["app.core.contracts"] = module
-    setattr(sys.modules["app.core"], "contracts", module)
+    sys.modules["app.core"].contracts = module

@@ -19,6 +19,7 @@ silently discards good edits or waves through bad ones.
 from __future__ import annotations
 
 from collections import Counter
+from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -326,13 +327,13 @@ class InvariantKernel:
         # An anchor the transform could not place must be surfaced, not dropped.
         surfaced = set(change.orphaned_anchor_ids)
         for record in context.reattachments:
-            if record.landed_span_id is None and record.anchor_id not in surfaced:
-                if record.anchor_id not in after_anchor_ids:
-                    reasons.append(
-                        f"{REJECT_CITATION_MULTISET_SHRANK}: anchor {record.anchor_id!r} found no home "
-                        f"after the transform and was neither reattached nor surfaced for a user "
-                        f"decision. An anchor below threshold is raised to the user, never dropped."
-                    )
+            unplaced = record.landed_span_id is None
+            if unplaced and record.anchor_id not in surfaced | after_anchor_ids:
+                reasons.append(
+                    f"{REJECT_CITATION_MULTISET_SHRANK}: anchor {record.anchor_id!r} found no home "
+                    f"after the transform and was neither reattached nor surfaced for a user "
+                    f"decision. An anchor below threshold is raised to the user, never dropped."
+                )
 
         effective_after = source_multiset(after) + held
         shrinkage = source_multiset(before) - effective_after
@@ -432,7 +433,7 @@ class InvariantKernel:
                 f"{FLAG_ORPHANED_ANCHOR}: anchor {anchor_id!r}"
                 + (f" ({marker})" if marker else "")
                 + " found no home after this change and is held for your decision: "
-                f"keep it where it was, move it to another sentence, or remove it."
+                + "keep it where it was, move it to another sentence, or remove it."
             )
 
         after_anchors = {a.anchor_id: (sp, a) for sp, a in iter_anchors(after)}
@@ -478,7 +479,7 @@ def _fragment_anchors(fragment: Fragment):
                 yield anchor, f"insert_blocks[{insertion.block.id}].spans[{span.id}]"
 
 
-def _verdict(decision: str, reasons: list[str]) -> KernelVerdict:
+def _verdict(decision: Literal["reject", "flag"], reasons: list[str]) -> KernelVerdict:
     if not reasons:
         raise AssertionError("KernelVerdict.reasons is never empty for a reject or a flag")
     return KernelVerdict(decision=decision, reasons=reasons, flags=[])

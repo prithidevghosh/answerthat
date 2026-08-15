@@ -16,6 +16,7 @@ from app.agent.transform import (
 )
 from app.core.contracts import Block
 
+
 def block_with_two_cited_sentences() -> Block:
     return Block(
         id="blk-1",

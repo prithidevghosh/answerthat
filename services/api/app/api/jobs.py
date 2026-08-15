@@ -18,7 +18,7 @@ and it does not mark itself `complete` with nothing in it (HR-3).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 log = logging.getLogger("app.api.jobs")
 
@@ -88,7 +88,7 @@ def redis_settings(settings: Any = None):
 class WorkerSettings:
     """`arq app.api.jobs.WorkerSettings`"""
 
-    functions = [ingest_document, run_review]
+    functions: ClassVar[list] = [ingest_document, run_review]
     on_startup = startup
     on_shutdown = shutdown
     job_timeout = JOB_TIMEOUT_SECONDS

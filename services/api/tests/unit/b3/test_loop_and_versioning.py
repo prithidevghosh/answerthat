@@ -20,7 +20,7 @@ from app.agent.loop import MAX_RETRIES, CommandLoop
 from app.agent.metrics import MetricsRegistry
 from app.agent.planner import Planner
 from app.agent.versioning import ApprovalError, ApprovalRequest, OrphanDecision, VersionService
-from app.core.contracts import Claim, KernelRejection, VerificationLabel
+from app.core.contracts import KernelRejection, VerificationLabel
 
 SHORTEN_PLAN = {
     "operations": [{"op": "Shorten", "target_ids": ["blk-1"], "params": {"ratio": 0.6}}]

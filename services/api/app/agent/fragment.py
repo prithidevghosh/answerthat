@@ -130,18 +130,18 @@ def apply_fragment(document: Document, fragment: Fragment) -> Document:
             raise FragmentApplicationError(f"replace_blocks: unknown block id {new_block.id!r}")
         section, old_block = target_block
         position = section.blocks.index(old_block)
-        replacement = deepcopy(new_block)
-        replacement.order = old_block.order
-        section.blocks[position] = replacement
+        replacement_block = deepcopy(new_block)
+        replacement_block.order = old_block.order
+        section.blocks[position] = replacement_block
 
     for new_section in fragment.replace_sections:
         old_section = section_index.get(new_section.id)
         if old_section is None:
             raise FragmentApplicationError(f"replace_sections: unknown section id {new_section.id!r}")
         position = doc.sections.index(old_section)
-        replacement = deepcopy(new_section)
-        replacement.order = old_section.order
-        doc.sections[position] = replacement
+        replacement_section = deepcopy(new_section)
+        replacement_section.order = old_section.order
+        doc.sections[position] = replacement_section
 
     # Indices are stale after whole-node replacement; rebuild before structural edits.
     section_index = {s.id: s for s in doc.sections}

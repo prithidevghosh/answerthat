@@ -8,7 +8,7 @@ implemented, it is merely written.
 from __future__ import annotations
 
 import pytest
-from conftest import AlwaysRenders, make_anchor, make_span
+from conftest import AlwaysRenders
 from fakes import (
     BagOfWordsEmbedder,
     ScriptedClaims,

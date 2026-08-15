@@ -22,24 +22,36 @@ log = logging.getLogger("app.api.adapters")
 class DocumentStoreAdapter:
     """B1's `app.ir.store.DocumentStore` → B3's `DocumentStore` port.
 
-    B1's `get` requires an explicit version and `head` returns the latest; B3's port
-    treats `version=None` as "latest". The translation is here so neither side has to
-    care about the other's convention.
+    Two translations. The obvious one: B1's `get` requires an explicit version and `head`
+    returns the latest, where B3's port treats `version=None` as "latest".
+
+    The less obvious one, and the reason this holds a *factory* rather than a store: B1's
+    `PostgresDocumentStore` takes an `AsyncSession`, and a session is per-unit-of-work, not
+    per-process. Holding one open for the lifetime of the app would accumulate a
+    transaction across unrelated requests and make one bad edit poison the next. Each call
+    opens its own `session_scope()`.
     """
 
-    def __init__(self, store: Any) -> None:
-        self._store = store
+    def __init__(self, store_factory: Any, session_scope: Any) -> None:
+        self._store_for = store_factory
+        self._session_scope = session_scope
 
     async def get(self, doc_id: str, version: int | None = None) -> Document | None:
-        if version is None:
-            return await self._store.head(doc_id)
-        return await self._store.get(doc_id, version)
+        async with self._session_scope() as session:
+            store = self._store_for(session)
+            if version is None:
+                return await store.head(doc_id)
+            return await store.get(doc_id, version)
 
     async def put_version(self, document: Document, *, parent_version: int) -> Document:
-        return await self._store.commit(document, parent_version=parent_version, label="agent-edit")
+        async with self._session_scope() as session:
+            return await self._store_for(session).commit(
+                document, parent_version=parent_version, label="agent-edit"
+            )
 
     async def list_versions(self, doc_id: str) -> list[int]:
-        return [info.version for info in await self._store.history(doc_id)]
+        async with self._session_scope() as session:
+            return [info.version for info in await self._store_for(session).history(doc_id)]
 
 
 class SourceReaderAdapter:

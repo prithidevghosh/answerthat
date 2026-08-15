@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.agent import prompts
 from app.agent.fragment import iter_blocks, iter_spans
@@ -101,9 +102,11 @@ def resolve_blocks(document: Document, target_ids: list[str]) -> list[Block]:
     selected: list[str] = []
     for section in document.sections:
         for block in section.blocks:
-            if section.id in wanted or block.id in wanted:
-                selected.append(block.id)
-            elif any(span_to_block.get(sid) == block.id for sid in wanted):
+            if (
+                section.id in wanted
+                or block.id in wanted
+                or any(span_to_block.get(sid) == block.id for sid in wanted)
+            ):
                 selected.append(block.id)
 
     by_id = {b.id: b for _s, b in iter_blocks(document)}
@@ -148,7 +151,7 @@ class OperationExecutor:
         except OperationSpecError as exc:
             return Execution(error=str(exc))
 
-        handlers = {
+        handlers: dict[OperationType, Any] = {
             OperationType.ADD_CITATIONS: self._add_citations,
             OperationType.FIND_SUPPORT: self._find_support,
             OperationType.SHORTEN: self._shorten,

@@ -34,6 +34,15 @@ log = logging.getLogger("app.agent.loop")
 MAX_RETRIES = 2
 
 
+OrphanAction = Literal["keep", "move", "remove"]
+
+
+def _all_orphan_actions() -> list[OrphanAction]:
+    """Every anchor gets the same three choices, and "leave it to the system" is not one
+    of them (ADR-013 step 4)."""
+    return ["keep", "move", "remove"]
+
+
 class OrphanOption(BaseModel):
     """An anchor that found no home, presented as a decision rather than a deletion."""
 
@@ -44,7 +53,7 @@ class OrphanOption(BaseModel):
     best_span_text: str | None = None
     score: float | None = None
     threshold: float | None = None
-    actions: list[Literal["keep", "move", "remove"]] = ["keep", "move", "remove"]
+    actions: list[OrphanAction] = Field(default_factory=_all_orphan_actions)
 
 
 class EvaluatedChange(BaseModel):

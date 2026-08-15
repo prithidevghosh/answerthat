@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 from conftest import (
     AlwaysRenders,
-    FakeSourceReader,
     NeverRenders,
     does_not_address,
     make_anchor,

@@ -24,7 +24,6 @@ from app.core.contracts import (  # noqa: E402
     VerificationLabel,
 )
 
-
 # --------------------------------------------------------------------------- fakes
 
 
