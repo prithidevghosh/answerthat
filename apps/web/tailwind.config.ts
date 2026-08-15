@@ -10,7 +10,7 @@ const config: Config = {
   theme: {
     extend: {
       // Channel form + <alpha-value> so opacity modifiers work. A bare
-      // `var(--x)` here compiles `border-sanguine/40` to invalid CSS that
+      // `var(--x)` here compiles `border-madder/40` to invalid CSS that
       // silently falls back to the default border — no build error, no warning.
       // See the note in globals.css :root.
       colors: {
