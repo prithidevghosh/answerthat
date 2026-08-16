@@ -78,11 +78,18 @@ class Reconciliation:
 
 
 class Arbiter:
+    """`accept_threshold` has no default on purpose.
+
+    ADR-024: every threshold lives in `app/core/config.py` and appears nowhere else. A
+    default here would be a second copy of `ARBITER_ACCEPT` — one that T1's sweep would
+    not move, and that would silently take over the moment a caller forgot the argument.
+    """
+
     def __init__(
         self,
         providers: ArbiterProviders,
         *,
-        accept_threshold: float = 0.85,
+        accept_threshold: float,
         max_concurrency: int = 4,
         candidates_per_search: int = 5,
     ) -> None:

@@ -276,15 +276,20 @@ async def repair_references(
 def require_model_credentials(api_key: str | None) -> str:
     """The repair tier needs a model. Absent one, it raises rather than skipping.
 
-    HR-2 names only the two search keys as startup-fatal, so a missing Anthropic key
-    does not abort boot — but it must not turn into a silently skipped pipeline stage
-    either. Every caller that needs the model calls this first.
+    `OPENAI_API_KEY` is startup-fatal under HR-2 / ADR-015, so in a correctly configured
+    process this never fires. It stays anyway, at the point of use: the failure it
+    guards against is a repair tier that quietly does nothing, and a bibliography whose
+    low-confidence entries were never repaired looks exactly like a bibliography full of
+    genuinely bad references. One is a missing key and the other is a bad paper, and a
+    silent skip makes them indistinguishable (HR-3).
     """
-    if not (api_key or "").strip():
+    key = (api_key or "").strip()
+    if not key:
         raise MissingAPIKeyError(
-            "ANTHROPIC_API_KEY is not set, so the constrained repair tier cannot run. "
+            "OPENAI_API_KEY is not set, so the constrained repair tier cannot run "
+            "(ADR-015 — every LLM role, this one included, goes through app/core/llm.py). "
             "Low-confidence references would silently stay unrepaired, which reads to a "
             "user like a paper full of bad references rather than a missing key. Set it "
             "in .env, or disable the repair tier explicitly."
         )
-    return api_key
+    return key

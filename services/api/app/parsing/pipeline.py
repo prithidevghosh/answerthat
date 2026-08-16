@@ -35,6 +35,7 @@ from app.parsing.models import ParsedDocument, TierCounts
 from app.parsing.references import references_from_tei
 from app.parsing.registry import registry
 from app.parsing.repair import ReferenceSegmenter, RepairOutcome, repair_references
+from app.parsing.segmenter import build_default_segmenter
 from app.parsing.style import StyleDetectionResult, detect_style
 from app.parsing.tei import parse_tei, tei_to_ir
 
@@ -46,6 +47,7 @@ __all__ = [
     "IngestPipeline",
     "get_ingest_pipeline",
     "build_default_arbiter",
+    "build_default_segmenter",
     "reset_ingest_pipeline",
     "build_parse_report",
 ]
@@ -62,6 +64,10 @@ class IngestResult:
     # just has no detected style, and the user is told so rather than being handed a
     # silently chosen default.
     style_error: str = ""
+    # Set when the repair tier was not configured at all, as opposed to configured and
+    # having repaired nothing. "We did not try" and "we tried and none qualified" are
+    # different claims about a bibliography and are not collapsed here (HR-3).
+    repair_skipped_reason: str = ""
 
     @property
     def document(self) -> Document:
@@ -120,10 +126,10 @@ async def ingest_tei(
     *,
     doc_id: str,
     repair_threshold: float,
+    ambiguity_margin: float,
     segmenter: ReferenceSegmenter | None = None,
     arbiter: Arbiter | None = None,
     styles_dir: Path | None = None,
-    ambiguity_margin: float = 0.05,
     detect_citation_style: bool = True,
     on_stage: Callable[[str], None] | None = None,
 ) -> IngestResult:
@@ -138,10 +144,18 @@ async def ingest_tei(
     references = references_from_tei(parse_tei(tei_xml), threshold=repair_threshold)
 
     repairs: list[RepairOutcome] = []
+    repair_skipped_reason = ""
     if segmenter is not None:
         _stage("repair")
         references, repairs = await repair_references(
             references, segmenter, threshold=repair_threshold
+        )
+    else:
+        repair_skipped_reason = (
+            "no reference segmenter was configured, so the constrained repair tier "
+            "(ADR-003) did not run. Entries below the repair trigger were left as GROBID "
+            "parsed them; none of them were rejected by the substring check, because the "
+            "check never ran."
         )
 
     reconciliations: list[Reconciliation] = []
@@ -157,6 +171,7 @@ async def ingest_tei(
         references=references,
         reconciliations=reconciliations,
         repairs=repairs,
+        repair_skipped_reason=repair_skipped_reason,
     )
 
     if detect_citation_style:
@@ -191,10 +206,10 @@ async def ingest_pdf(
     filename: str = "paper.pdf",
     grobid: GrobidClient,
     repair_threshold: float,
+    ambiguity_margin: float,
     segmenter: ReferenceSegmenter | None = None,
     arbiter: Arbiter | None = None,
     styles_dir: Path | None = None,
-    ambiguity_margin: float = 0.05,
 ) -> IngestResult:
     """The full path from an uploaded PDF to a reconciled Document IR."""
     resolved_doc_id = doc_id or ids.new_id(ids.DOCUMENT)
@@ -203,10 +218,10 @@ async def ingest_pdf(
         tei_xml,
         doc_id=resolved_doc_id,
         repair_threshold=repair_threshold,
+        ambiguity_margin=ambiguity_margin,
         segmenter=segmenter,
         arbiter=arbiter,
         styles_dir=styles_dir,
-        ambiguity_margin=ambiguity_margin,
     )
 
 
@@ -230,8 +245,8 @@ class IngestPipeline:
         *,
         grobid: GrobidClient,
         repair_threshold: float,
+        ambiguity_margin: float,
         styles_dir: Path | None = None,
-        ambiguity_margin: float = 0.05,
         arbiter: Arbiter | None = None,
         segmenter: ReferenceSegmenter | None = None,
         store_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
@@ -308,10 +323,10 @@ class IngestPipeline:
                 tei_xml,
                 doc_id=doc_id,
                 repair_threshold=self._repair_threshold,
+                ambiguity_margin=self._ambiguity_margin,
                 segmenter=self._segmenter,
                 arbiter=self._arbiter,
                 styles_dir=self._styles_dir,
-                ambiguity_margin=self._ambiguity_margin,
                 on_stage=lambda stage: self._registry.advance(doc_id, stage),
             )
 
@@ -383,6 +398,18 @@ def build_parse_report(result: IngestResult) -> dict[str, Any]:
             }
             for r in result.reconciliations
         ],
+        "repairs": [
+            {
+                "ref_id": outcome.ref_id,
+                "ran": outcome.ran,
+                "accepted": outcome.accepted,
+                "parse_confidence": outcome.parse_confidence,
+                "violations": [str(violation) for violation in outcome.violations],
+                "skipped_reason": outcome.skipped_reason,
+            }
+            for outcome in result.repairs
+        ],
+        "repair_skipped_reason": result.repair_skipped_reason or None,
         "style_error": result.style_error or None,
     }
 
@@ -422,7 +449,7 @@ def build_default_arbiter(settings: Any) -> Arbiter:
                 store=store,
             ),
         ),
-        accept_threshold=settings.arbiter_accept_threshold,
+        accept_threshold=settings.arbiter_accept,
     )
 
 
@@ -434,23 +461,27 @@ def get_ingest_pipeline(
     segmenter: ReferenceSegmenter | None = None,
     store_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
     allow_unreconciled: bool = False,
+    allow_unrepaired: bool = False,
 ) -> IngestPipeline:
     """Factory for the API layer. One pipeline per process.
 
-    Pass `arbiter=` to control the wiring; otherwise one is built from `settings` via
-    `build_default_arbiter`. Either way there *is* an arbiter, unless the caller states
-    `allow_unreconciled=True` — a pipeline that quietly resolves nothing is the failure
-    mode ADR-010 exists to prevent.
+    Pass `arbiter=` / `segmenter=` to control the wiring; otherwise both are built from
+    `settings`. Either way both stages *exist*, unless the caller says otherwise with
+    `allow_unreconciled` / `allow_unrepaired` — a pipeline that quietly resolves nothing
+    or quietly repairs nothing is the failure mode ADR-010 exists to prevent, and the
+    difference between "configured off" and "forgotten" has to be visible in the code.
     """
     global _PIPELINE
     if _PIPELINE is None:
         if arbiter is None and not allow_unreconciled:
             arbiter = build_default_arbiter(settings)
+        if segmenter is None and not allow_unrepaired:
+            segmenter = build_default_segmenter()
         _PIPELINE = IngestPipeline(
             grobid=grobid or GrobidClient(),
-            repair_threshold=settings.repair_confidence_threshold,
+            repair_threshold=settings.repair_trigger,
+            ambiguity_margin=settings.style_ambiguous_delta,
             styles_dir=settings.csl_styles_dir,
-            ambiguity_margin=settings.style_ambiguity_margin,
             arbiter=arbiter,
             segmenter=segmenter,
             store_factory=store_factory,

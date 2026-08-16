@@ -229,6 +229,6 @@ async def test_skipped_and_failed_are_distinguishable_in_the_outcomes() -> None:
 
 
 def test_missing_model_key_raises_rather_than_skipping_the_tier() -> None:
-    with pytest.raises(MissingAPIKeyError, match="ANTHROPIC_API_KEY"):
+    with pytest.raises(MissingAPIKeyError, match="OPENAI_API_KEY"):
         require_model_credentials("")
     assert require_model_credentials("sk-real") == "sk-real"

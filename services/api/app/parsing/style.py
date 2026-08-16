@@ -189,11 +189,14 @@ def detect_style(
     references: list[ParsedReference],
     markers: list[str],
     *,
+    ambiguity_margin: float,
     styles_dir: Path | None = None,
-    ambiguity_margin: float = 0.05,
     sample_size: int = DEFAULT_SAMPLE_SIZE,
 ) -> StyleDetectionResult:
     """Detect the paper's citation style, or report honestly that we cannot.
+
+    `ambiguity_margin` is required rather than defaulted: it is `STYLE_AMBIGUOUS_DELTA`,
+    it lives in `app/core/config.py`, and ADR-024 means it exists in exactly one place.
 
     Raises `StyleDetectionFailure` only when scoring cannot run at all — no renderable
     references, or unreadable style files. An ambiguous or weak result is a legitimate
@@ -222,7 +225,7 @@ def detect_style(
     runner_up = scores[1] if len(scores) > 1 else None
     margin = round(runner_up.distance - best.distance, 4) if runner_up else None
 
-    if margin is not None and margin < ambiguity_margin:
+    if runner_up is not None and margin is not None and margin < ambiguity_margin:
         return StyleDetectionResult(
             style_id=None,
             score=best.distance,
@@ -368,7 +371,7 @@ def get_style_service(settings: Any) -> StyleService:
     if _STYLE_SERVICE is None:
         _STYLE_SERVICE = StyleService(
             styles_dir=settings.csl_styles_dir,
-            ambiguity_margin=settings.style_ambiguity_margin,
+            ambiguity_margin=settings.style_ambiguous_delta,
         )
     return _STYLE_SERVICE
 

@@ -29,6 +29,8 @@ FIXTURES = Path(__file__).parent / "fixtures"
 REPO_ROOT = Path(__file__).resolve().parents[5]
 STYLES_DIR = REPO_ROOT / "packages" / "csl-styles"
 THRESHOLD = 0.75
+ACCEPT = 0.85
+MARGIN = 0.05
 
 
 @pytest.fixture
@@ -85,7 +87,7 @@ class OneHitProvider:
 
 async def _ingest(tei_xml: str, *, with_arbiter: bool = True, style: bool = False):
     arbiter = (
-        Arbiter(ArbiterProviders(openalex=OneHitProvider()), accept_threshold=0.85)
+        Arbiter(ArbiterProviders(openalex=OneHitProvider()), accept_threshold=ACCEPT)
         if with_arbiter
         else None
     )
@@ -93,6 +95,7 @@ async def _ingest(tei_xml: str, *, with_arbiter: bool = True, style: bool = Fals
         tei_xml,
         doc_id="doc_pipeline",
         repair_threshold=THRESHOLD,
+        ambiguity_margin=MARGIN,
         arbiter=arbiter,
         styles_dir=STYLES_DIR,
         detect_citation_style=style,

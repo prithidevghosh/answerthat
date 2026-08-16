@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.contracts import AbstractSource, ParseFailure, SourceRecord
+from app.core.contracts import AbstractSource, MissingAPIKeyError, ParseFailure, SourceRecord
 from app.core.errors import ConfigurationError, StyleDetectionFailure
 from app.export.pandoc import pandoc_available
 from app.parsing.arbiter import Arbiter, ArbiterProviders
@@ -31,6 +31,8 @@ FIXTURES = Path(__file__).parent / "fixtures"
 REPO_ROOT = Path(__file__).resolve().parents[5]
 STYLES_DIR = REPO_ROOT / "packages" / "csl-styles"
 THRESHOLD = 0.75
+ACCEPT = 0.85
+MARGIN = 0.05
 
 
 @pytest.fixture
@@ -49,9 +51,9 @@ def _reset():
 
 
 class FakeSettings:
-    repair_confidence_threshold = THRESHOLD
+    repair_trigger = THRESHOLD
     csl_styles_dir = STYLES_DIR
-    style_ambiguity_margin = 0.05
+    style_ambiguous_delta = 0.05
 
 
 class StubGrobid:
@@ -87,8 +89,9 @@ def _pipeline(grobid: StubGrobid, **kwargs) -> IngestPipeline:
     return IngestPipeline(
         grobid=grobid,  # type: ignore[arg-type]
         repair_threshold=THRESHOLD,
+        ambiguity_margin=MARGIN,
         styles_dir=STYLES_DIR,
-        arbiter=Arbiter(ArbiterProviders(openalex=ResolveNothing())),
+        arbiter=Arbiter(ArbiterProviders(openalex=ResolveNothing()), accept_threshold=ACCEPT),
         **kwargs,
     )
 
@@ -111,22 +114,51 @@ def test_a_pipeline_without_an_arbiter_refuses_to_be_built_by_accident() -> None
     """Every reference would come back unresolved, which reads as a bad paper rather
     than as missing configuration (HR-3 / ADR-010)."""
     with pytest.raises(ConfigurationError, match="without an arbiter"):
-        IngestPipeline(grobid=StubGrobid(), repair_threshold=THRESHOLD)  # type: ignore[arg-type]
+        IngestPipeline(  # type: ignore[arg-type]
+            grobid=StubGrobid(), repair_threshold=THRESHOLD, ambiguity_margin=MARGIN
+        )
 
 
 def test_running_unreconciled_must_be_stated_explicitly() -> None:
     pipeline = IngestPipeline(
         grobid=StubGrobid(),  # type: ignore[arg-type]
         repair_threshold=THRESHOLD,
+        ambiguity_margin=MARGIN,
         allow_unreconciled=True,
     )
     assert pipeline.status("nothing") is None
 
 
 def test_the_factory_returns_one_pipeline_per_process() -> None:
-    first = get_ingest_pipeline(FakeSettings(), grobid=StubGrobid(), allow_unreconciled=True)  # type: ignore[arg-type]
+    first = get_ingest_pipeline(  # type: ignore[arg-type]
+        FakeSettings(), grobid=StubGrobid(), allow_unreconciled=True, allow_unrepaired=True
+    )
     second = get_ingest_pipeline(FakeSettings())
     assert first is second
+
+
+def test_the_factory_wires_a_segmenter_unless_told_not_to() -> None:
+    """A repair tier that is absent by omission would look exactly like a repair tier
+    that ran and found nothing to fix (HR-3 / ADR-003)."""
+    sentinel = object()
+    pipeline = get_ingest_pipeline(  # type: ignore[arg-type]
+        FakeSettings(),
+        grobid=StubGrobid(),
+        arbiter=Arbiter(ArbiterProviders(openalex=ResolveNothing()), accept_threshold=ACCEPT),
+        segmenter=sentinel,  # type: ignore[arg-type]
+    )
+    assert pipeline._segmenter is sentinel
+
+    reset_ingest_pipeline()
+    with pytest.raises(MissingAPIKeyError):
+        # No OPENAI_API_KEY in the test environment, so building the default segmenter
+        # raises rather than yielding a pipeline whose repair tier quietly does nothing.
+        get_ingest_pipeline(  # type: ignore[arg-type]
+            FakeSettings(),
+            grobid=StubGrobid(),
+            arbiter=Arbiter(ArbiterProviders(openalex=ResolveNothing()), accept_threshold=ACCEPT),
+        )
+    reset_ingest_pipeline()
 
 
 # ---------------------------------------------------------------- happy path
@@ -173,6 +205,21 @@ async def test_the_report_shows_why_a_reference_did_not_resolve(tei_xml: str) ->
     assert reconciliation["fully_checked"] is True
     assert reconciliation["notes"]
     assert reconciliation["provisional_csl"]["title"] == "Attention Is All You Need"
+
+
+async def test_the_report_says_when_the_repair_tier_did_not_run_at_all(tei_xml: str) -> None:
+    """"We did not try" and "we tried and nothing qualified" are different claims.
+
+    Collapsing them would show a bibliography whose low-confidence entries were never
+    put through the substring check as though they had passed it (HR-3 / ADR-003).
+    """
+    pipeline = _pipeline(StubGrobid(tei=tei_xml))  # built with no segmenter
+    pipeline.enqueue("doc_svc_repair", "paper.pdf", b"%PDF-fake")
+    await _drain(pipeline, "doc_svc_repair")
+
+    report = pipeline.parse_report("doc_svc_repair")
+    assert report["repairs"] == []
+    assert "did not run" in (report["repair_skipped_reason"] or "")
 
 
 async def test_references_carry_their_anchor_ids_and_coordinates(tei_xml: str) -> None:
@@ -289,6 +336,7 @@ async def test_build_parse_report_is_json_serialisable(tei_xml: str) -> None:
         tei_xml,
         doc_id="doc_json",
         repair_threshold=THRESHOLD,
+        ambiguity_margin=MARGIN,
         detect_citation_style=False,
     )
     json.dumps(build_parse_report(result))

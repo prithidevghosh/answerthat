@@ -15,6 +15,10 @@ from app.parsing.style import classify_marker_family, detect_style
 REPO_ROOT = Path(__file__).resolve().parents[5]
 STYLES_DIR = REPO_ROOT / "packages" / "csl-styles"
 
+# STYLE_AMBIGUOUS_DELTA as configured. `detect_style` takes no default (ADR-024: the
+# number lives in app/core/config.py), so the value under test is stated here.
+MARGIN = 0.05
+
 CSL_RECORDS = [
     {
         "type": "paper-conference",
@@ -114,6 +118,7 @@ def test_detection_recovers_the_style_its_strings_were_rendered_in(style_id: str
         _references(_rendered_as(style_id)),
         markers,
         styles_dir=STYLES_DIR,
+        ambiguity_margin=MARGIN,
     )
     assert result.style_id == style_id, result.reason
     assert not result.ambiguous
@@ -122,7 +127,7 @@ def test_detection_recovers_the_style_its_strings_were_rendered_in(style_id: str
 
 def test_the_score_is_exposed_and_explicable() -> None:
     """CP-3 requires the numeric score, not just the winner."""
-    result = detect_style(_references(_rendered_as("ieee")), ["[1]"], styles_dir=STYLES_DIR)
+    result = detect_style(_references(_rendered_as("ieee")), ["[1]"], styles_dir=STYLES_DIR, ambiguity_margin=MARGIN)
     assert result.score is not None
     assert result.similarity == pytest.approx(1.0 - result.score)
     assert result.compared == 3
@@ -134,14 +139,14 @@ def test_the_score_is_exposed_and_explicable() -> None:
 
 def test_marker_family_narrows_the_candidate_set() -> None:
     """Numeric markers must not leave APA on the shortlist."""
-    result = detect_style(_references(_rendered_as("ieee")), ["[1]", "[2]"], styles_dir=STYLES_DIR)
+    result = detect_style(_references(_rendered_as("ieee")), ["[1]", "[2]"], styles_dir=STYLES_DIR, ambiguity_margin=MARGIN)
     considered = {c.style_id for c in result.candidates}
     assert considered == {"ieee", "acm", "nature", "vancouver"}
     assert "apa" not in considered
 
 
 def test_an_unclassifiable_marker_family_scores_the_full_shortlist() -> None:
-    result = detect_style(_references(_rendered_as("apa")), [], styles_dir=STYLES_DIR)
+    result = detect_style(_references(_rendered_as("apa")), [], styles_dir=STYLES_DIR, ambiguity_margin=MARGIN)
     assert result.marker_family.family is None
     assert len(result.candidates) == 6
 
@@ -169,7 +174,7 @@ def test_realistic_ieee_strings_detect_ieee() -> None:
         'Y. Tay, "Efficient transformers: A survey," ACM Computing Surveys, vol. 55, pp. 1-28, 2022.',
         "T. Hastie, The Elements of Statistical Learning. Springer, 2009.",
     ]
-    result = detect_style(_references(raw), ["[1]", "[2]", "[3]"], styles_dir=STYLES_DIR)
+    result = detect_style(_references(raw), ["[1]", "[2]", "[3]"], styles_dir=STYLES_DIR, ambiguity_margin=MARGIN)
     assert result.style_id == "ieee", result.reason
 
 
@@ -180,7 +185,10 @@ def test_realistic_apa_strings_detect_apa() -> None:
         "Hastie, T. (2009). The Elements of Statistical Learning. Springer.",
     ]
     result = detect_style(
-        _references(raw), ["(Vaswani, 2017)", "(Tay, 2022)"], styles_dir=STYLES_DIR
+        _references(raw),
+        ["(Vaswani, 2017)", "(Tay, 2022)"],
+        styles_dir=STYLES_DIR,
+        ambiguity_margin=MARGIN,
     )
     assert result.style_id == "apa", result.reason
 
@@ -200,12 +208,12 @@ def test_nothing_scorable_raises_rather_than_guessing() -> None:
         )
     ]
     with pytest.raises(StyleDetectionFailure, match="nothing"):
-        detect_style(unusable, ["[1]"], styles_dir=STYLES_DIR)
+        detect_style(unusable, ["[1]"], styles_dir=STYLES_DIR, ambiguity_margin=MARGIN)
 
 
 def test_references_without_raw_strings_are_excluded_and_reported() -> None:
     """`compared` must never overstate the evidence behind the score."""
     references = _references(_rendered_as("ieee"))
     references[2] = references[2].model_copy(update={"raw_string": ""})
-    result = detect_style(references, ["[1]"], styles_dir=STYLES_DIR)
+    result = detect_style(references, ["[1]"], styles_dir=STYLES_DIR, ambiguity_margin=MARGIN)
     assert result.compared == 2
