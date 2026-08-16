@@ -320,6 +320,54 @@ Also verified this pass, and not previously true:
 `uv run mypy app/review app/providers` → `Success: no issues found in 27 source files`
 Full backend suite: `uv run pytest tests/unit -q` → `582 passed`
 
+CP-1 · B1 · 2026-08-16 — **NOT complete.** Two criteria are false; the rest hold.
+
+`cd services/api && uv run pytest tests/unit/b1 -q` → `276 passed in 15.6s` (no skips; Pandoc
+3.10.1 is on PATH, so the export and style tests are real rather than skipped)
+`uv run ruff check app tests/unit/b1` → `All checks passed!`
+`uv run mypy app/core app/ir app/parsing app/export` → `Success: no issues found in 34 source files`
+
+| Criterion | Evidence |
+|---|---|
+| `docker compose up` starts api, web, grobid, postgres, redis | **Partly.** `docker compose config` validates and all five services are declared with healthchecks. Compose previously passed `ANTHROPIC_API_KEY` and no `OPENAI_API_KEY`, so the api container would have aborted on HR-2; fixed in `e1e3d64`. A full `up` against real keys has **not** been run in this session — treat as unverified. |
+| Missing any of the three keys aborts startup with a clear error (HR-2) | `test_config_hr2.py` — 25 passed. Each key is asserted individually, the message names the missing key and where to obtain it, and a whitespace-only value counts as missing. |
+| `app/core/` matches Appendix A exactly | `test_core_frozen.py` — 33 passed, field-by-field against the Appendix A text |
+| `llm.py`: per-role routing, mandatory JSON Schema, `embed()` at 512 dims, replay raises on a miss | `test_llm.py` — 19 passed. Replay miss raises `LLMRecordingMissing` and does not construct a client; the recording key includes the model, so a model change invalidates rather than silently reusing recordings. |
+| Every model ID and every threshold in `config.py` and **nowhere else** | `grep -rn "gpt-5\|text-embedding-3" app --include="*.py"` outside `config.py` → only the role-table comments in `contracts.py`, which are Appendix A verbatim. `grep -rnE "= *0\.(85\|75\|72\|55\|05\|3)\b\|2_000_000" app/ir app/parsing app/export` → 0 code hits (2 hits, both prose quoting ADR-001 in a docstring). `Arbiter` and `detect_style` no longer carry threshold defaults. |
+| Per-document token budget enforced; exceeding it raises | `test_llm.py` — `TokenBudget.charge` raises `TokenBudgetExceeded`; there is no truncation path |
+| `anchor_fingerprints` side table; no vector inline in the IR | `test_ir.py` — 30 passed; `CitationAnchor` has `fingerprint_id`, and a test asserts no IR field holds a `list[float]` |
+| Uploads written to `/data/uploads/{doc_id}.pdf`; `jobs` table with status/error/progress | **NO.** The `jobs` half exists — B3's `agent_jobs` table carries status/error/progress. The upload half does not: `app/api/routes/documents.py::upload` never writes the payload to disk. Compose volume and `UPLOAD_DIR` are in place; the route is B3's. Filed in §5. |
+| PDF → GROBID → TEI → Document IR persisted with a version number | **Partly.** TEI → IR → persist-with-version is proven (`test_services.py` — 19 passed, asserts the stored version). The GROBID leg is exercised against a stub, not a live sidecar: no real PDF has been ingested this session, so recall against a real paper is unmeasured. That measurement is CP-8 (T1). |
+| IR → LaTeX renders through Pandoc without error | `test_export.py` — 32 passed, all six styles render |
+| Round trip preserves title, section order, paragraph count ±0, every anchor | `test_export.py::test_round_trip_preserves_everything` and the per-style parametrisation; the negative tests confirm the check *fails* on a dropped anchor and on reordered sections, so a pass means something |
+
+CP-2 · B1 · 2026-08-16 — **complete in code; unmeasured against real PDFs.**
+
+| Criterion | Evidence |
+|---|---|
+| Every `biblStruct` → provisional CSL-JSON with a `parse_confidence` | `test_tei.py` — 28 passed, including the four known-fiddly cases named individually: name particles, `analytic` vs `monogr`, container-title, page ranges from attributes |
+| Repair tier runs only below threshold and discards non-substring values | `test_repair.py` — 20 passed (invented author, expanded abbreviation, corrected typo, invented DOI, invented year, nested values); `test_segmenter.py` — 17 passed. ADR-027: any violation discards the whole entry. Note the gap this pass closed: the tier had no implementation and was wired as `segmenter=None`, so it had never run on a real upload. It now goes through `LLMClient` role `REPAIR` with a file-based prompt. |
+| Arbiter: Crossref DOI → S2 match → OpenAlex, accept only at ≥ 0.85 | `test_arbiter.py` — 21 passed; ADR-025 DOI identity scores 1.0 and is labelled `doi_identity` in the breakdown |
+| On accept the external record replaces our parse; raw string and our parse retained | `test_arbiter.py`, `test_pipeline.py::test_the_canonical_record_replaced_our_parse` — `provisional_csl` and `raw_string` survive on the `Reconciliation` for the audit view |
+| All five tiers implemented and populated | `test_pipeline.py` — 13 passed |
+| Zero references dropped (the tier invariant) | `TierCounts.assert_invariant()` runs on **every ingest**, not only in tests; `test_pipeline.py::test_the_invariant_actually_fires_when_a_reference_goes_missing` proves it fires |
+| Orphan in-text markers detected and located | `test_tei.py`; each orphan carries `anchor_id`, `marker_text`, `target`, `section_id`, `span_id`, `page` |
+
+Caveat, stated rather than discovered: every one of these runs against fixture TEI. No live model
+call has been made through role `REPAIR` and there are no `LLM_MODE=record` recordings yet, so the
+repair tier's *behaviour* on real reference strings is untested — only its guarantees are. Golden-set
+measurement is CP-8.
+
+CP-3 · B1 · 2026-08-16 — **complete.**
+
+| Criterion | Evidence |
+|---|---|
+| Marker-family classifier (numeric vs author-date) | `test_style.py::test_marker_family_narrows_the_candidate_set` — a numeric paper scores 4 candidates, not 6 |
+| Round-trip scoring through each `.csl` via Pandoc, normalised Levenshtein | `test_style.py` — 19 passed; each of the five renderable styles is recovered from strings rendered in it |
+| Shortlist present in `packages/csl-styles/` | six files: `apa.csl`, `ieee.csl`, `acm-sig-proceedings.csl`, `nature.csl`, `chicago-author-date.csl`, `vancouver.csl`; `test_export.py::test_all_six_shortlisted_styles_are_present_and_readable` |
+| Winning style + **numeric score** exposed via API | `GET /documents/{doc_id}/style` (B3's route) returns B1's `StyleService.detect()` payload: `style_id`, `score`, `similarity`, `margin`, per-candidate distances, and `reason` |
+| Top two within 0.05 → `ambiguous`, user picks | `test_style.py::test_top_two_within_the_margin_returns_ambiguous` — `style_id` is `None` and the user's choice overrides via `select()`. The margin is `STYLE_AMBIGUOUS_DELTA` from config; `detect_style` has no default for it. |
+
 ---
 
 ## 7. Standing reminders
