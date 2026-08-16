@@ -268,7 +268,7 @@ async def test_parse_report_carries_references_orphans_and_counts(tei_xml: str) 
     pipeline.enqueue("doc_svc2", "paper.pdf", b"%PDF-fake")
     await _drain(pipeline, "doc_svc2")
 
-    report = pipeline.parse_report("doc_svc2")
+    report = await pipeline.parse_report("doc_svc2")
     assert len(report["references"]) == 4
     assert len(report["orphan_markers"]) == 1
     assert report["orphan_markers"][0]["marker_text"] == "[42]"
@@ -285,7 +285,7 @@ async def test_the_report_shows_why_a_reference_did_not_resolve(tei_xml: str) ->
     pipeline.enqueue("doc_svc3", "paper.pdf", b"%PDF-fake")
     await _drain(pipeline, "doc_svc3")
 
-    report = pipeline.parse_report("doc_svc3")
+    report = await pipeline.parse_report("doc_svc3")
     reconciliation = next(r for r in report["reconciliations"] if r["ref_id"] == "b0")
     assert not reconciliation["accepted"]
     assert reconciliation["fully_checked"] is True
@@ -303,7 +303,7 @@ async def test_the_report_says_when_the_repair_tier_did_not_run_at_all(tei_xml: 
     pipeline.enqueue("doc_svc_repair", "paper.pdf", b"%PDF-fake")
     await _drain(pipeline, "doc_svc_repair")
 
-    report = pipeline.parse_report("doc_svc_repair")
+    report = await pipeline.parse_report("doc_svc_repair")
     assert report["repairs"] == []
     assert "did not run" in (report["repair_skipped_reason"] or "")
 
@@ -313,7 +313,7 @@ async def test_references_carry_their_anchor_ids_and_coordinates(tei_xml: str) -
     pipeline.enqueue("doc_svc4", "paper.pdf", b"%PDF-fake")
     await _drain(pipeline, "doc_svc4")
 
-    report = pipeline.parse_report("doc_svc4")
+    report = await pipeline.parse_report("doc_svc4")
     b0 = next(r for r in report["references"] if r["ref_id"] == "b0")
     assert len(b0["anchor_ids"]) == 2
     assert b0["coordinates"][0]["page"] == 5
@@ -331,13 +331,13 @@ async def test_a_failed_ingest_is_reported_as_failed_not_as_empty(tei_xml: str) 
     assert status["state"] == "failed"
     assert "GROBID exploded" in status["error"]
     with pytest.raises(ParseFailure, match="ingest failed"):
-        pipeline.parse_report("doc_bad")
+        await pipeline.parse_report("doc_bad")
 
 
-def test_parse_report_for_an_unknown_document_raises() -> None:
+async def test_parse_report_for_an_unknown_document_raises() -> None:
     pipeline = _pipeline(StubGrobid())
     with pytest.raises(ParseFailure, match="no ingest is known"):
-        pipeline.parse_report("doc_never_seen")
+        await pipeline.parse_report("doc_never_seen")
 
 
 async def test_parse_report_refuses_while_the_ingest_is_still_running(tei_xml: str) -> None:
@@ -345,7 +345,7 @@ async def test_parse_report_refuses_while_the_ingest_is_still_running(tei_xml: s
     pipeline = _pipeline(StubGrobid(tei=tei_xml))
     pipeline.enqueue("doc_slow", "paper.pdf", b"%PDF-fake")
     with pytest.raises(ParseFailure, match="still"):
-        pipeline.parse_report("doc_slow")
+        await pipeline.parse_report("doc_slow")
     await _drain(pipeline, "doc_slow")
 
 

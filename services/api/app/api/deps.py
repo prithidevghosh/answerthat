@@ -91,6 +91,14 @@ class Services:
     """`REATTACH_ACCEPT` / `REATTACH_FLAG_FLOOR`, read from config at boot (ADR-024). No
     default here on purpose: a default in this file would be a threshold living outside
     `app/core/config.py`."""
+    conversations: Any = None
+    """`app.orchestrator.session.ConversationStore` over the three `chat_*` tables."""
+    evidence_index: Any = None
+    """`app.orchestrator.index.EvidenceIndex` — embeddings and cosine lookup (ADR-034)."""
+    orchestrator: Any = None
+    """`app.orchestrator.runtime.Orchestrator` — the agent loop and the confirmation gate."""
+    watcher: Any = None
+    """`app.orchestrator.watcher.ConversationWatcher` — background jobs → conversation."""
     settings: Any = None
 
     # -------------------------------------------------------------- accessors
@@ -161,6 +169,18 @@ _MISSING_HINTS = {
         "UPLOAD_DIR is not configured, so an uploaded PDF has nowhere to be written and a "
         "failed ingest could never be retried (ADR-022)"
     ),
+    "orchestrator": (
+        "the conversational orchestrator is not wired — see the reason logged by "
+        "`_bind_orchestrator` at startup, which names the collaborator that was missing. "
+        "There is no half-equipped agent: a registry short one tool would present it to the "
+        "model and fail at the moment the user said yes"
+    ),
+    "conversations": "the chat_* conversation tables are not wired (ADR-032)",
+    "evidence_index": "the evidence index is not wired (ADR-034)",
+    "watcher": (
+        "the background-job watcher is not wired, so a finished parse or review would never "
+        "reach a conversation"
+    ),
 }
 
 
@@ -199,7 +219,120 @@ def build_services() -> Services:
     from app.api.models import build_model_clients  # noqa: PLC0415
 
     services.embedder, services.text_model, services.structured_model = build_model_clients(settings)
+
+    # Last, because it needs nearly everything above it.
+    _bind_orchestrator(services, settings)
     return services
+
+
+def _bind_orchestrator(services: Services, settings: Any) -> None:
+    """The conversational orchestrator, its conversation store, index and watcher.
+
+    Built explicitly rather than through `_bind()`, and this is the third time this file
+    has had to say why (`_bind_ingest`, `_bind_retrieval`): **a factory with an injection
+    point cannot go through the generic helper**, which passes only `settings`. The
+    orchestrator needs a tool registry, and the tool registry needs the ingest pipeline,
+    the document store, the source reader, the style service, the review runner, retrieval,
+    the command loop, the version service and the exporter. `_bind()` would hand it
+    settings and it would come up holding nothing.
+
+    **A missing collaborator leaves the whole thing unbound.** Not a registry with the
+    tools we could build: an agent presented with `export_latex` that fails only once the
+    user has said yes is worse than an agent that never offered it, and worse again than a
+    503 at the moment the chat is opened. `require("orchestrator")` then names it.
+    """
+    required = (
+        "ingest",
+        "documents",
+        "sources",
+        "style",
+        "review",
+        "retrieval",
+        "exporter",
+        "embedder",
+        "structured_model",
+        "text_model",
+        "render_probe",
+        "fingerprints",
+    )
+    missing = [name for name in required if getattr(services, name, None) is None]
+    if missing:
+        log.error(
+            "orchestrator not bound: it needs %s, and %s %s not wired. The chat route will "
+            "503 naming this rather than starting a half-equipped agent.",
+            ", ".join(required),
+            ", ".join(missing),
+            "is" if len(missing) == 1 else "are",
+        )
+        return
+
+    try:
+        from app.api.adapters import (  # noqa: PLC0415
+            CommandGatewayAdapter,
+            ExportGatewayAdapter,
+            RetrievalIntrospectorAdapter,
+            VersionGatewayAdapter,
+        )
+        from app.core.db import session_scope  # noqa: PLC0415
+        from app.core.llm import get_llm_client  # noqa: PLC0415
+        from app.orchestrator.index import EvidenceIndex, PostgresEvidenceRowStore  # noqa: PLC0415
+        from app.orchestrator.runtime import Orchestrator  # noqa: PLC0415
+        from app.orchestrator.session import PostgresConversationStore  # noqa: PLC0415
+        from app.orchestrator.tools import ToolContext  # noqa: PLC0415
+        from app.orchestrator.watcher import ConversationWatcher  # noqa: PLC0415
+    except ImportError as exc:
+        log.warning("orchestrator unavailable: %s", exc)
+        return
+
+    services.conversations = PostgresConversationStore(session_scope)
+    services.evidence_index = EvidenceIndex(
+        rows=PostgresEvidenceRowStore(session_scope),
+        # The one embedding model, at the one width (ADR-016). A second would produce
+        # vectors that score plausibly against the first's and mean nothing.
+        #
+        # Read through `require()` rather than off the field directly. The `missing` check
+        # above has already established every one of these is bound; `require()` is how
+        # that is expressed to a reader and to a type checker, and it keeps the failure —
+        # if this ever runs out of order — a named 503 rather than an AttributeError
+        # several frames later.
+        embedder=services.require("embedder"),
+        model=settings.embedding_model,
+        dimensions=settings.embedding_dimensions,
+        batch_size=settings.orchestrator_index_batch,
+        text_chars=settings.orchestrator_index_text_chars,
+    )
+
+    context = ToolContext(
+        ingest=services.require("ingest"),
+        documents=services.require("documents"),
+        sources=services.require("sources"),
+        style=services.require("style"),
+        review=services.require("review"),
+        retrieval=RetrievalIntrospectorAdapter(services.require("retrieval")),
+        commands=CommandGatewayAdapter(services),
+        versions=VersionGatewayAdapter(services),
+        exporter=ExportGatewayAdapter(services),
+        index=services.evidence_index,
+        settings=settings,
+    )
+    services.orchestrator = Orchestrator(
+        # The one LLM client, so `converse()` charges the same per-document budget the
+        # review and the planner charge, and record/replay covers the chat too (ADR-018).
+        model=get_llm_client(settings),
+        conversations=services.conversations,
+        tool_context=context,
+        settings=settings,
+    )
+    services.watcher = ConversationWatcher(
+        orchestrator=services.orchestrator,
+        ingest=services.require("ingest"),
+        review=services.require("review"),
+        documents=services.require("documents"),
+        sources=services.require("sources"),
+        index=services.evidence_index,
+        settings=settings,
+    )
+    log.info("bound orchestrator, conversations, evidence_index and watcher")
 
 
 def _bind_sources(services: Services, settings: Any) -> None:
@@ -319,6 +452,7 @@ def _bind_ingest(services: Services, settings: Any) -> None:
         from app.core.db import session_scope  # noqa: PLC0415
         from app.ir.store import PostgresDocumentStore  # noqa: PLC0415
         from app.parsing.pipeline import get_ingest_pipeline  # noqa: PLC0415
+        from app.parsing.reports import PostgresParseReportStore  # noqa: PLC0415
     except ImportError as exc:
         log.warning("ingest unavailable: %s", exc)
         return
@@ -328,7 +462,17 @@ def _bind_ingest(services: Services, settings: Any) -> None:
         async with session_scope() as session:
             yield PostgresDocumentStore(session)
 
-    services.ingest = get_ingest_pipeline(settings, store_factory=store_factory)
+    @asynccontextmanager
+    async def report_store_factory() -> AsyncIterator[Any]:
+        # A second factory rather than a second use of the first: the parse report is
+        # written after the IR version is committed, in its own transaction, so a failure
+        # to cache the report cannot roll back the document it describes (ADR-032).
+        async with session_scope() as session:
+            yield PostgresParseReportStore(session)
+
+    services.ingest = get_ingest_pipeline(
+        settings, store_factory=store_factory, report_store_factory=report_store_factory
+    )
     log.info("bound ingest → app.parsing.pipeline.get_ingest_pipeline")
 
 

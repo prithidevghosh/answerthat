@@ -1,5 +1,6 @@
 import type { ApiClient } from './client';
 import type { ApprovalPayload, ReviewEvent, ReviewHandle } from './types';
+import { fixtureChat } from './fixture-chat';
 import * as F from './fixtures';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -18,6 +19,9 @@ export const fixtureClient: ApiClient = {
     return { kind: 'ok', missing_keys: [], detail: null };
   },
 
+  // Split exactly as the live client is, so the fork after upload exercises the
+  // same two calls in the same order. A fixture that did both halves in one
+  // would let the conversational path look instant here and 404 in production.
   async uploadPdf(file, onProgress) {
     for (const f of [0.15, 0.42, 0.71, 1]) {
       await wait(180);
@@ -25,13 +29,21 @@ export const fixtureClient: ApiClient = {
     }
     await wait(400);
     onProgress({ stage: 'extracting', fraction: null, detail: 'GROBID is reading the document' });
+    return { doc_id: F.DOCUMENT.doc_id, job_id: 'job-fixture-1', version: null };
+  },
+
+  async waitForParse(docId, onProgress) {
     await wait(900);
-    onProgress({ stage: 'parsing', fraction: null, detail: 'Segmenting 47 references' });
+    onProgress({ stage: 'parsing', fraction: 0.45, detail: 'Segmenting 47 references' });
     await wait(800);
-    onProgress({ stage: 'resolving', fraction: null, detail: 'Reconciling against Crossref, Semantic Scholar, OpenAlex' });
+    onProgress({
+      stage: 'resolving',
+      fraction: 0.78,
+      detail: 'Reconciling against Crossref, Semantic Scholar, OpenAlex',
+    });
     await wait(900);
     onProgress({ stage: 'complete', fraction: 1, detail: 'Ready' });
-    return { doc_id: F.DOCUMENT.doc_id, version: F.DOCUMENT.version };
+    return { doc_id: docId, job_id: 'job-fixture-1', version: F.DOCUMENT.version };
   },
 
   async getParseResult() {
@@ -155,4 +167,13 @@ export const fixtureClient: ApiClient = {
   exportUrl() {
     return '#fixture-export';
   },
+
+  // The conversation lives in ./fixture-chat — a scripted stand-in for the
+  // orchestrator, kept out of here because it is a hundred times the size of
+  // every other fixture method and is the only one that keeps state.
+  startConversation: fixtureChat.startConversation,
+  getConversation: fixtureChat.getConversation,
+  sendMessage: fixtureChat.sendMessage,
+  subscribeChat: fixtureChat.subscribeChat,
+  stopTurn: fixtureChat.stopTurn,
 };

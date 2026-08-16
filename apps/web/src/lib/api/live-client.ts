@@ -1,9 +1,17 @@
 import { API_BASE, apiBase, browserUrl, type ApiClient } from './client';
+import { readConfirmation } from './chat-payloads';
 import type {
   ApiStatus,
+  ChatEvent,
+  ChatHandle,
+  ChatRole,
   CommandResult,
   CommitResult,
+  Conversation,
+  ConversationLog,
   ExportManifest,
+  JsonObject,
+  JsonValue,
   ParseResult,
   ParseStatus,
   ReviewEvent,
@@ -157,14 +165,33 @@ function postPdf(
 }
 
 /**
- * Upload the PDF, then **wait for the parse it started**.
+ * Send the PDF and resolve on the **202**.
  *
  * `POST /documents` answers 202 with a job id: the paper is accepted, and GROBID
- * plus per-reference arbitration have not run yet. This used to report
- * `stage: 'complete'` on that 202 and resolve, so the caller navigated to the
- * parse inspector within milliseconds and `GET /documents/{id}/parse` 404'd on a
- * document that did not exist yet — "Could not load parse results", every time,
- * on a paper that was parsing perfectly well and finished a few minutes later.
+ * plus per-reference arbitration have not run yet. **A caller that navigates to
+ * the parse inspector on this promise will 404**, every time, on a paper that is
+ * parsing perfectly well — which is exactly what used to happen, and why the
+ * poll loop below exists. `waitForParse` is not optional garnish on the guided
+ * path; it is the thing that makes the guided path work.
+ *
+ * The two halves are separate because the conversational flow needs the
+ * opposite: it navigates on the 202 on purpose, since narrating the parse as it
+ * runs is the agent's first job, and its screen is built to show an ingest in
+ * progress rather than to read a finished report.
+ */
+async function uploadPdf(
+  file: File,
+  onProgress: (p: UploadProgress) => void,
+  signal?: AbortSignal,
+): Promise<UploadAccepted> {
+  const accepted = await postPdf(file, onProgress, signal);
+  // No version yet, and none invented: the IR store assigns it at `persist`,
+  // several stages away. `waitForParse` reads the real one off `parse-status`.
+  return { doc_id: accepted.doc_id, job_id: accepted.job_id, version: null };
+}
+
+/**
+ * Wait for the parse the upload started.
  *
  * The 202 carries `poll` for exactly this reason, and `parse-status` is the
  * endpoint it names. `resolving` and `parsing` were already in `UploadStage` and
@@ -175,17 +202,15 @@ function postPdf(
  * showing nothing, which reads as a paper with no references rather than as a
  * parse that failed.
  */
-async function uploadPdf(
-  file: File,
+async function waitForParse(
+  docId: string,
   onProgress: (p: UploadProgress) => void,
   signal?: AbortSignal,
 ): Promise<UploadAccepted> {
-  const accepted = await postPdf(file, onProgress, signal);
-
   for (;;) {
     if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
 
-    const status = await parseStatus(accepted.doc_id);
+    const status = await parseStatus(docId);
 
     if (status.state === 'failed') {
       throw new ApiError(
@@ -200,7 +225,7 @@ async function uploadPdf(
       // The version the store assigned, not one we assumed. `parse-status` only
       // carries it once the IR is written, which is the same moment `/parse`
       // starts answering.
-      return { doc_id: accepted.doc_id, version: status.version ?? 1 };
+      return { doc_id: docId, job_id: '', version: status.version ?? 1 };
     }
 
     onProgress({
@@ -208,7 +233,7 @@ async function uploadPdf(
       // The backend derives this from the stage's position in its own ordered
       // list, so it is a real fraction of the pipeline rather than a timer.
       fraction: status.progress,
-      detail: file.name,
+      detail: null,
     });
 
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
@@ -246,6 +271,7 @@ function reason(data: Record<string, unknown>): string {
 export const liveClient: ApiClient = {
   getStatus,
   uploadPdf,
+  waitForParse,
 
   getParseResult: (docId) => json<ParseResult>(`/documents/${docId}/parse`),
 
@@ -392,4 +418,247 @@ export const liveClient: ApiClient = {
 
   getExportManifest: (docId) => json<ExportManifest>(`/documents/${docId}/export/manifest`),
   exportUrl: (docId) => `${API_BASE}/documents/${docId}/export.tex`,
+
+  // ---------- the conversational flow ----------
+
+  startConversation: (docId) =>
+    json<Conversation>(`/documents/${docId}/chat`, { method: 'POST' }),
+
+  getConversation: (conversationId) => json<ConversationLog>(`/chat/${conversationId}`),
+
+  sendMessage: (conversationId, text) =>
+    json<{ accepted: true }>(`/chat/${conversationId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }),
+
+  async stopTurn(conversationId) {
+    await json<unknown>(`/chat/${conversationId}/stop`, { method: 'POST' });
+  },
+
+  subscribeChat(conv, onEvent): ChatHandle {
+    // Straight to FastAPI, and following the URL the server named. Both halves
+    // of that sentence are load-bearing, and both were learned from the review
+    // stream: a Next route handler buffers SSE and delivers the agent's whole
+    // turn in one clump at the end, and a hand-composed path 404s silently.
+    const url = browserUrl(conv.stream);
+    const es = new EventSource(url);
+
+    let closed = false;
+    const close = () => {
+      closed = true;
+      es.close();
+    };
+
+    const emit = (event: ChatEvent) => {
+      if (!closed) onEvent(event);
+    };
+
+    const parse = (ev: MessageEvent): JsonObject | null => {
+      try {
+        const parsed: unknown = JSON.parse(ev.data as string);
+        return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+          ? (parsed as JsonObject)
+          : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const malformed = (event: string) =>
+      emit({
+        type: 'error',
+        data: {
+          message: `The conversation stream sent a malformed ${event} event.`,
+          detail: null,
+          recoverable: false,
+        },
+      });
+
+    const str = (v: JsonValue | undefined, fallback = ''): string =>
+      typeof v === 'string' ? v : fallback;
+    const numOrNull = (v: JsonValue | undefined): number | null =>
+      typeof v === 'number' && Number.isFinite(v) ? v : null;
+    const obj = (v: JsonValue | undefined): JsonObject | null =>
+      typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as JsonObject) : null;
+
+    const role = (v: JsonValue | undefined): ChatRole =>
+      v === 'user' || v === 'assistant' || v === 'tool' || v === 'system_notice' ? v : 'assistant';
+
+    const on = (name: string, handle: (data: JsonObject) => void) => {
+      es.addEventListener(name, (ev) => {
+        const data = parse(ev as MessageEvent);
+        if (!data) return malformed(name);
+        handle(data);
+      });
+    };
+
+    on('message_start', (d) =>
+      emit({
+        type: 'message_start',
+        data: { message_id: str(d.message_id), role: role(d.role) },
+      }),
+    );
+
+    on('message_delta', (d) =>
+      emit({
+        type: 'message_delta',
+        data: { message_id: str(d.message_id), text: str(d.text) },
+      }),
+    );
+
+    on('message', (d) =>
+      emit({
+        type: 'message',
+        data: {
+          message_id: str(d.message_id),
+          role: role(d.role),
+          content: str(d.content),
+        },
+      }),
+    );
+
+    on('tool_call', (d) =>
+      emit({
+        type: 'tool_call',
+        data: {
+          call_id: str(d.call_id),
+          name: str(d.name),
+          arguments: obj(d.arguments) ?? {},
+          // A tool the registry gave no label for still gets a readable line —
+          // its own name beats an empty one, and both beat hiding the call.
+          label: str(d.label) || str(d.name),
+        },
+      }),
+    );
+
+    on('tool_result', (d) =>
+      emit({
+        type: 'tool_result',
+        data: {
+          call_id: str(d.call_id),
+          name: str(d.name),
+          ok: d.ok === true,
+          summary: str(d.summary),
+          data: obj(d.data),
+          error: typeof d.error === 'string' ? d.error : null,
+        },
+      }),
+    );
+
+    on('progress', (d) => {
+      if (d.kind === 'review') {
+        // The watcher forwards the review stream's `finding` events under
+        // `progress` too, tagged `event: "finding"`. Those payloads are a
+        // Finding — they carry no counters at all — so reading `verified` and
+        // `total` off one yields zeroes, and the live counter drops to
+        // "0 of 0 claims verified" every time a finding lands. That reads as a
+        // review that verified nothing, which is the precise dishonesty the
+        // counter exists to prevent. A payload with no counters is not a
+        // progress reading and is dropped; findings reach the screen as
+        // `FindingCard`s off the agent's `list_findings` result.
+        //
+        // Both vocabularies are accepted for the same reason `counters()`
+        // above accepts both: the endpoint documents `{verified, total}` and
+        // the pipeline's own stats are `{claims_verified, claims_total}`.
+        const verified = numOrNull(d.verified) ?? numOrNull(d.claims_verified);
+        const total = numOrNull(d.total) ?? numOrNull(d.claims_total);
+        if (verified === null || total === null) return;
+
+        emit({
+          type: 'progress',
+          data: {
+            kind: 'review',
+            verified,
+            total,
+            findings_emitted: numOrNull(d.findings_emitted),
+            candidates_considered: numOrNull(d.candidates_considered),
+            quote_check_failures: numOrNull(d.quote_check_failures),
+            unverifiable_no_abstract: numOrNull(d.unverifiable_no_abstract),
+            claims_without_candidates: numOrNull(d.claims_without_candidates),
+            error: typeof d.error === 'string' ? d.error : null,
+          },
+        });
+        return;
+      }
+      // Anything not named `review` is the ingest. The watcher only emits two
+      // kinds, and defaulting to the one the screen shows first is safer than
+      // dropping a tick because a kind arrived misspelt.
+      const state = d.state;
+      emit({
+        type: 'progress',
+        data: {
+          kind: 'parse',
+          state:
+            state === 'queued' || state === 'running' || state === 'complete' || state === 'failed'
+              ? state
+              : null,
+          stage: typeof d.stage === 'string' ? d.stage : null,
+          fraction: numOrNull(d.fraction),
+          filename: typeof d.filename === 'string' ? d.filename : null,
+          error: typeof d.error === 'string' ? d.error : null,
+        },
+      });
+    });
+
+    on('awaiting_confirmation', (d) =>
+      emit({ type: 'awaiting_confirmation', data: readConfirmation(d) }),
+    );
+
+    on('heartbeat', () => emit({ type: 'heartbeat' }));
+
+    // The wire says `done`. `complete` is listened for as well because the
+    // review stream's terminal event was missed for exactly this reason — two
+    // vocabularies, no overlap, and a finished run reported as "closed before
+    // finishing". Registering both costs nothing and cannot be wrong.
+    const finish = (d: JsonObject) => {
+      emit({
+        type: 'done',
+        data: {
+          message_id: typeof d.message_id === 'string' ? d.message_id : null,
+          tokens_used: numOrNull(d.tokens_used),
+          budget_remaining: numOrNull(d.budget_remaining),
+        },
+      });
+    };
+    on('done', finish);
+    on('complete', finish);
+
+    es.addEventListener('error', (ev) => {
+      // Two different events arrive here, and the distinction is the whole
+      // point. A *named* `error` from the server is a MessageEvent carrying a
+      // reason, and it is terminal for the turn — but not for the conversation,
+      // so the transcript stays and the composer re-enables. A transport error
+      // is a bare Event, and EventSource may still reconnect on its own.
+      const data = 'data' in ev ? parse(ev as MessageEvent) : null;
+      if (data) {
+        emit({
+          type: 'error',
+          data: {
+            message: str(data.error) || str(data.message) || 'The turn failed and the API gave no reason.',
+            detail: typeof data.detail === 'string' ? data.detail : null,
+            recoverable: false,
+          },
+        });
+        return;
+      }
+
+      emit({
+        type: 'error',
+        data: {
+          message:
+            es.readyState === EventSource.CLOSED
+              ? 'The conversation stream closed.'
+              : 'The conversation stream was interrupted. Reconnecting…',
+          detail: null,
+          recoverable: es.readyState !== EventSource.CLOSED,
+        },
+      });
+      // A closed EventSource never reopens; stop pretending it might.
+      if (es.readyState === EventSource.CLOSED) close();
+    });
+
+    return { close };
+  },
 };

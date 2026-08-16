@@ -17,6 +17,12 @@ makes live calls is neither reproducible nor honest about what it covered (ADR-0
 **The token budget is enforced, and exceeding it raises.** Not truncates. A review that
 silently dropped half a paper's claims would report fewer findings — the same false
 negative as ADR-010, arrived at from a different direction (HR-3).
+
+**Multi-turn tool calling lives here too, not beside it (ADR-031).** `converse()` is the
+agentic counterpart of `complete()`: a message list, native tool schemas, and streamed
+text deltas. It is in this client rather than in `app/orchestrator/` because a second
+OpenAI call site would lose per-role routing, the token budget and record/replay in one
+move — the four properties above are properties of *this module*, not of the SDK.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -38,10 +45,13 @@ __all__ = [
     "StructuredOutputError",
     "TokenBudget",
     "Recorder",
+    "ToolCall",
+    "AssistantTurn",
     "OpenAILLMClient",
     "get_llm_client",
     "reset_llm_client",
     "recording_key",
+    "conversation_key",
 ]
 
 
@@ -83,6 +93,57 @@ def recording_key(role: LLMRole, model: str, prompt: str, schema: dict, system: 
         ensure_ascii=False,
     )
     return hashlib.blake2b(payload.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def conversation_key(
+    role: LLMRole, model: str, messages: list[dict], tools: list[dict] | None, system: str | None
+) -> str:
+    """Stable hash of a `converse()` request.
+
+    Covers the **whole message list and the tool schemas**, not just the last message.
+    Anything less would replay one recording for two different conversations that happen
+    to end the same way, which is the agentic version of replaying a stale answer — and
+    it would do it silently, because the response would still be well-formed.
+    """
+    payload = json.dumps(
+        {
+            "role": role.value,
+            "model": model,
+            "system": system or "",
+            "messages": messages,
+            "tools": tools or [],
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.blake2b(payload.encode("utf-8"), digest_size=16).hexdigest()
+
+
+@dataclass
+class ToolCall:
+    """One tool invocation the model asked for.
+
+    `arguments` is already JSON-parsed. Malformed JSON raises `StructuredOutputError`
+    rather than arriving as `{}`: an empty argument object is a valid call for several
+    tools here, so a parse failure that degraded to one would run the wrong operation on
+    the user's paper and look like the model's intent.
+    """
+
+    call_id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class AssistantTurn:
+    """What one `converse()` call produced."""
+
+    text: str
+    """May be empty: a turn that only called tools says nothing to the user yet."""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    finish_reason: str = "stop"
+    tokens: int = 0
 
 
 @dataclass
@@ -206,6 +267,75 @@ class OpenAILLMClient:
             )
         return response
 
+    async def converse(
+        self,
+        role: LLMRole,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
+        system: str | None = None,
+        doc_id: str = "",
+        on_text: Callable[[str], Awaitable[None]] | None = None,
+    ) -> AssistantTurn:
+        """One multi-turn, tool-calling round trip. ADR-031.
+
+        `messages` is a list of OpenAI message dicts, `role="tool"` results included.
+        `on_text` receives text deltas as they arrive; supplying it switches the request
+        to `stream=True`. The user has to see the agent typing — a six-minute review with
+        a frozen chat is the failure ADR-014 exists to prevent, one level up.
+
+        Every guarantee `complete()` makes holds here unchanged: per-role model routing,
+        record/replay that raises on a miss, and a token budget that raises rather than
+        truncating.
+        """
+        model = self.settings.model_for(role)
+        key = conversation_key(role, model, messages, tools, system)
+        self.calls.append({"role": role.value, "model": model, "key": key, "kind": "converse"})
+
+        if self.mode == "replay":
+            recorded = self.recorder.load(key)
+            if recorded is None:
+                raise LLMRecordingMissing(
+                    f"no recording for role={role.value} model={model} key={key}.\n"
+                    f"  expected at: {self.recorder.path_for(key)}\n"
+                    "LLM_MODE=replay does not fall through to the network (ADR-018). Re-record "
+                    "deliberately with LLM_MODE=record, then commit the new file."
+                )
+            turn = _turn_from_record(recorded["response"])
+            # Replayed text is still delivered through `on_text`, so a client watching the
+            # stream sees the same shape it would live. Emitted whole: the chunk
+            # boundaries were never part of the recording (see `_record_turn`).
+            if on_text is not None and turn.text:
+                await on_text(turn.text)
+            return turn
+
+        turn = await (
+            self._stream_openai(model, messages, tools, system, on_text)
+            if on_text is not None
+            else self._converse_openai(model, messages, tools, system)
+        )
+
+        # Charged after the call, exactly as `complete()` does, and allowed to raise
+        # through the caller. The orchestrator turns `TokenBudgetExceeded` into a visible
+        # chat error; what it must never become is a conversation that quietly stops.
+        if doc_id:
+            self.budget.charge(doc_id, turn.tokens)
+
+        if self.mode == "record":
+            self.recorder.save(
+                key,
+                {
+                    "role": role.value,
+                    "model": model,
+                    "system": system,
+                    "messages": messages,
+                    "tools": tools,
+                    "response": _record_turn(turn),
+                    "tokens": turn.tokens,
+                },
+            )
+        return turn
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Sentence embeddings at 512 dimensions (ADR-016)."""
         if not texts:
@@ -303,6 +433,192 @@ class OpenAILLMClient:
             ) from exc
         usage = getattr(response, "usage", None)
         return parsed, int(getattr(usage, "total_tokens", 0) or 0)
+
+    # -- conversation internals --------------------------------------------
+
+    def _request_messages(self, messages: list[dict], system: str | None) -> list[dict]:
+        return ([{"role": "system", "content": system}] if system else []) + list(messages)
+
+    async def _converse_openai(
+        self, model: str, messages: list[dict], tools: list[dict] | None, system: str | None
+    ) -> AssistantTurn:
+        """Non-streaming path. Used when no `on_text` was supplied."""
+        client = self._openai()
+        response = await client.chat.completions.create(
+            model=model,
+            messages=self._request_messages(messages, system),
+            **({"tools": tools, "tool_choice": "auto"} if tools else {}),
+        )
+        choice = response.choices[0]
+        finish_reason = str(getattr(choice, "finish_reason", "") or "stop")
+        _refuse_on_length(model, finish_reason)
+
+        message = choice.message
+        calls = [
+            _tool_call_from(
+                getattr(call, "id", "") or "",
+                getattr(getattr(call, "function", None), "name", "") or "",
+                getattr(getattr(call, "function", None), "arguments", "") or "",
+                model,
+            )
+            for call in (getattr(message, "tool_calls", None) or [])
+        ]
+        usage = getattr(response, "usage", None)
+        return AssistantTurn(
+            text=getattr(message, "content", None) or "",
+            tool_calls=calls,
+            finish_reason=finish_reason,
+            tokens=int(getattr(usage, "total_tokens", 0) or 0),
+        )
+
+    async def _stream_openai(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None,
+        system: str | None,
+        on_text: Callable[[str], Awaitable[None]],
+    ) -> AssistantTurn:
+        """Streaming path: text deltas out as they arrive, tool calls reassembled.
+
+        **Tool call fragments are assembled by index, not by chunk.** OpenAI splits a
+        single call's `arguments` across many deltas and identifies each only by its
+        position in the list; treating one chunk as one call produces a call whose
+        arguments are the first eight characters of a JSON object. The id and the name
+        arrive once, usually on the first fragment, so both are accumulated rather than
+        overwritten with the empty strings that follow.
+        """
+        client = self._openai()
+        stream = await client.chat.completions.create(
+            model=model,
+            messages=self._request_messages(messages, system),
+            stream=True,
+            stream_options={"include_usage": True},
+            **({"tools": tools, "tool_choice": "auto"} if tools else {}),
+        )
+
+        text_parts: list[str] = []
+        fragments: dict[int, dict[str, str]] = {}
+        finish_reason = ""
+        tokens = 0
+
+        async for chunk in stream:
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                tokens = int(getattr(usage, "total_tokens", 0) or 0) or tokens
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            choice = choices[0]
+            finish_reason = str(getattr(choice, "finish_reason", "") or finish_reason)
+
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+
+            piece = getattr(delta, "content", None)
+            if piece:
+                text_parts.append(piece)
+                # Awaited inline rather than fired off as a task: the caller's queue is
+                # what preserves delta order, and a task per token would reorder them.
+                await on_text(piece)
+
+            for call_delta in getattr(delta, "tool_calls", None) or []:
+                index = int(getattr(call_delta, "index", 0) or 0)
+                slot = fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                call_id = getattr(call_delta, "id", None)
+                if call_id:
+                    slot["id"] = call_id
+                function = getattr(call_delta, "function", None)
+                name = getattr(function, "name", None) if function else None
+                if name:
+                    slot["name"] = name
+                arguments = getattr(function, "arguments", None) if function else None
+                if arguments:
+                    slot["arguments"] += arguments
+
+        _refuse_on_length(model, finish_reason or "stop")
+        calls = [
+            _tool_call_from(
+                fragments[index]["id"],
+                fragments[index]["name"],
+                fragments[index]["arguments"],
+                model,
+            )
+            for index in sorted(fragments)
+        ]
+        return AssistantTurn(
+            text="".join(text_parts),
+            tool_calls=calls,
+            finish_reason=finish_reason or "stop",
+            tokens=tokens,
+        )
+
+
+def _refuse_on_length(model: str, finish_reason: str) -> None:
+    """`length` is a refusal, exactly as in `_call_openai`.
+
+    A truncated turn is worse here than in a structured call: the cut may land mid
+    tool-call arguments, producing a syntactically valid object with a missing field, and
+    the agent would act on it.
+    """
+    if finish_reason == "length":
+        raise StructuredOutputError(
+            f"{model} hit the output length limit, so this turn is truncated and cannot be "
+            "trusted — including any tool call it appears to have made."
+        )
+
+
+def _tool_call_from(call_id: str, name: str, arguments: str, model: str) -> ToolCall:
+    try:
+        parsed = json.loads(arguments) if arguments.strip() else {}
+    except json.JSONDecodeError as exc:
+        raise StructuredOutputError(
+            f"{model} produced tool call {name or '<unnamed>'} with arguments that are not "
+            f"valid JSON: {arguments[:200]!r}. Nothing is substituted — an empty argument "
+            "object is a legal call for several tools, so a default here would run the wrong "
+            "operation and look intentional."
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise StructuredOutputError(
+            f"{model} produced tool call {name or '<unnamed>'} whose arguments parsed to "
+            f"{type(parsed).__name__}, not an object."
+        )
+    return ToolCall(call_id=call_id, name=name, arguments=parsed)
+
+
+def _record_turn(turn: AssistantTurn) -> dict:
+    """The assembled turn, never the raw chunks.
+
+    Chunk boundaries are a property of one network session, not of the answer. Recording
+    them would make an identical response fail to compare equal across re-records and
+    would tie the fixture to the SDK's framing.
+    """
+    return {
+        "text": turn.text,
+        "tool_calls": [
+            {"call_id": call.call_id, "name": call.name, "arguments": call.arguments}
+            for call in turn.tool_calls
+        ],
+        "finish_reason": turn.finish_reason,
+        "tokens": turn.tokens,
+    }
+
+
+def _turn_from_record(payload: dict) -> AssistantTurn:
+    return AssistantTurn(
+        text=payload.get("text", "") or "",
+        tool_calls=[
+            ToolCall(
+                call_id=call.get("call_id", ""),
+                name=call.get("name", ""),
+                arguments=call.get("arguments") or {},
+            )
+            for call in payload.get("tool_calls") or []
+        ],
+        finish_reason=payload.get("finish_reason", "stop"),
+        tokens=int(payload.get("tokens", 0) or 0),
+    )
 
 
 _CLIENT: OpenAILLMClient | None = None

@@ -199,6 +199,24 @@ class ReviewJobRunner:
             return {"doc_id": doc_id, "status": "not_started", "events_emitted": 0}
         return job.status_payload()
 
+    def findings(self, doc_id: str) -> list[dict[str, Any]]:
+        """Every `finding` this document's job has emitted, in emission order.
+
+        Read off the same event log `stream()` replays, rather than recomputed, so a
+        caller that lists findings and a caller that watched them stream cannot disagree
+        about what was found. Non-blocking and non-consuming: unlike `stream()`, this
+        answers immediately and is safe to call while the job is still running — the list
+        is simply the findings so far, which is what `status()` reports alongside it.
+
+        An empty list for a document with no job is *not* the same claim as an empty list
+        for a finished one, and this method does not distinguish them. Callers pair it
+        with `status()`, which does.
+        """
+        job = self._jobs.get(doc_id)
+        if job is None:
+            return []
+        return [payload for name, payload in job.events if name == "finding"]
+
     async def stream(
         self, doc_id: str, *, heartbeat_seconds: float = HEARTBEAT_SECONDS
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:

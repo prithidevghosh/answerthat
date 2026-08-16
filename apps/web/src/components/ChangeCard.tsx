@@ -39,15 +39,27 @@ const OP_LABEL: Record<string, string> = {
 export function ChangeCard({
   evaluated,
   sources,
-  decision,
+  decision = 'pending',
   onDecide,
-  busy,
+  busy = false,
+  readOnly = false,
 }: {
   evaluated: EvaluatedChange;
   sources: Record<string, SourceRecord>;
-  decision: Decision;
-  onDecide: (approve: boolean) => void;
-  busy: boolean;
+  decision?: Decision;
+  onDecide?: (approve: boolean) => void;
+  busy?: boolean;
+  /**
+   * Render the change without its own approve/reject footer.
+   *
+   * The conversational flow approves by *telling the agent* — the confirmation
+   * travels as a message and the agent calls `commit_change_set`. Per-card
+   * buttons here would let the screen commit without the agent, which is the
+   * one thing that would turn that flow back into the deterministic one with
+   * extra steps. This prop is why the chat reuses this card rather than growing
+   * a second one that drifts from it.
+   */
+  readOnly?: boolean;
 }) {
   const { change, verdict, diff, notes } = evaluated;
   const [error, setError] = useState<string | null>(null);
@@ -204,14 +216,19 @@ export function ChangeCard({
       )}
 
       <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-hair pt-5">
-        {decision === 'pending' ? (
+        {readOnly ? (
+          <span className="inline-flex items-center gap-2 font-ui text-2xs text-muted">
+            <Seal kind="open" size={15} />
+            Proposed — nothing is written until you tell the assistant to commit
+          </span>
+        ) : decision === 'pending' ? (
           <>
             <button
               type="button"
               disabled={busy}
               onClick={() => {
                 setError(null);
-                onDecide(true);
+                onDecide?.(true);
               }}
               className="rounded border border-verdigris/45 px-5 py-2 font-ui text-xs text-verdigris transition-colors duration-ink ease-ink hover:bg-verdigris/[0.07] disabled:opacity-50"
             >
@@ -222,7 +239,7 @@ export function ChangeCard({
               disabled={busy}
               onClick={() => {
                 setError(null);
-                onDecide(false);
+                onDecide?.(false);
               }}
               className="rounded border border-madder/45 px-5 py-2 font-ui text-xs text-madder transition-colors duration-ink ease-ink hover:bg-madder/[0.07] disabled:opacity-50"
             >

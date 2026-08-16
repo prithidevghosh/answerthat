@@ -31,7 +31,16 @@ export function WorkbenchHeader({
   version,
 }: {
   docId: string;
-  current: Step;
+  /**
+   * `'chat'` is not a fifth stage and is deliberately not in `STEPS`.
+   *
+   * The conversational flow is a second path through the same four operations,
+   * not a step after export, so it takes its own entry ahead of the plates and
+   * leaves the deterministic screens exactly as they were. The four stay
+   * reachable from it: it is the same document at the same versions, and a user
+   * who wants to read a diff on Pl. III should not have to start over.
+   */
+  current: Step | 'chat';
   title?: string | null;
   version?: number;
 }) {
@@ -57,6 +66,27 @@ export function WorkbenchHeader({
 
         <nav aria-label="Stages">
           <ol className="flex items-stretch">
+            {current === 'chat' && (
+              <li className="flex items-stretch">
+                <Link
+                  href={`/documents/${docId}/chat`}
+                  aria-current="page"
+                  className="group flex flex-col items-center gap-1 px-2 pb-1.5 pt-1 text-cobalt sm:px-3"
+                >
+                  <span aria-hidden="true" className="engraved-label">
+                    Conv.
+                  </span>
+                  <span className="font-body text-xs leading-none">Chat</span>
+                  <span
+                    aria-hidden="true"
+                    className="h-[2px] w-full origin-left animate-draw-rule bg-cobalt"
+                  />
+                </Link>
+                <span aria-hidden="true" className="mx-1 self-center text-2xs text-palest sm:mx-2">
+                  ·
+                </span>
+              </li>
+            )}
             {STEPS.map((step, i) => {
               const isCurrent = step.id === current;
               return (

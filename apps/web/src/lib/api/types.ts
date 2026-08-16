@@ -19,6 +19,7 @@ import type {
   OrphanMarker,
   ParsedReference,
   ProposedChange,
+  Section,
   SourceRecord,
 } from '../contracts';
 
@@ -75,16 +76,35 @@ export interface ParseStatus {
   error: string | null;
 }
 
+/**
+ * `POST /documents` → 202.
+ *
+ * `version` is nullable because the 202 genuinely does not know it. The upload
+ * is accepted, GROBID has not run, and the IR store has not assigned anything
+ * yet — `waitForParse` is what fills it in, off `parse-status`, once the IR is
+ * written. It was non-nullable while `uploadPdf` did both halves in one call;
+ * splitting them (so the agentic path can navigate on the 202) makes the gap
+ * visible, and a number invented to close it would be a lie about which version
+ * a screen is reading.
+ */
 export interface UploadAccepted {
   doc_id: string;
-  version: number;
+  job_id: string;
+  version: number | null;
 }
 
 export interface UploadProgress {
   stage: UploadStage;
   /** 0..1, or null when the stage cannot report a fraction honestly. */
   fraction: number | null;
-  detail: string;
+  /**
+   * A line beside the bar, or null when there is nothing to add.
+   *
+   * Nullable since `waitForParse` was split out of `uploadPdf`: it is given a
+   * doc id, not a `File`, so it cannot report the filename and does not pretend
+   * to. The caller holds the file and fills it back in.
+   */
+  detail: string | null;
 }
 
 // ---------- review stream ----------
@@ -294,6 +314,334 @@ export interface ExportManifest {
   blocked_reason: string | null;
 }
 
+// ---------- the conversational flow ----------
+/**
+ * Shapes for `app/api/routes/chat.py`, written against the event table in
+ * `backend_agentic.md` §7.
+ *
+ * Two rules govern everything below.
+ *
+ * **Every payload gets a real interface.** A `Record<string, unknown>` that
+ * reaches a component turns a wire mismatch into a runtime read of `undefined`
+ * — the same failure the note at the top of this file describes, one level
+ * further in. So the tool results are a union discriminated on the tool's
+ * *name*, narrowed once at the boundary in ./chat-payloads, and a component
+ * only ever receives a shape that has already been checked.
+ *
+ * **A shape we do not recognise is still shown.** `ToolResult` always carries a
+ * `summary` the tool wrote, so an unrecognised `data` renders that line rather
+ * than nothing. Dropping a tool result because its payload changed would make
+ * the agent look like it did less than it did.
+ */
+
+/** A JSON document, typed. Tool arguments are genuinely open — one schema per
+ *  tool, decided by the registry — but they are not `any`, and this is what
+ *  lets the arguments disclosure render them without guessing. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue };
+export type JsonObject = { [k: string]: JsonValue };
+
+/** `POST /documents/{doc_id}/chat` → 201/200. */
+export interface Conversation {
+  conversation_id: string;
+  doc_id: string;
+  /** e.g. `/api/chat/{id}/stream` — origin-relative, `/api` included. The
+   *  client follows this rather than composing a path; see `subscribeChat`. */
+  stream: string;
+  poll: string;
+}
+
+export type ChatRole = 'user' | 'assistant' | 'tool' | 'system_notice';
+
+/** One row of `chat_messages`, as `GET /api/chat/{id}` serves it. */
+export interface ChatLogMessage {
+  message_id: string;
+  seq: number;
+  role: ChatRole;
+  content: string;
+  /** Present on assistant messages that issued tool calls. */
+  tool_calls: ChatToolCallPayload[] | null;
+  /** Present on `role: 'tool'` messages — which call this answers. */
+  tool_call_id: string | null;
+  created_at: string | null;
+}
+
+/** `GET /api/chat/{conversation_id}` — the cold load. */
+export interface ConversationLog {
+  conversation_id: string;
+  doc_id: string;
+  status: string;
+  messages: ChatLogMessage[];
+}
+
+// --- SSE payloads, one interface per event name ---
+
+export interface ChatMessageStart {
+  message_id: string;
+  role: ChatRole;
+}
+
+export interface ChatMessageDelta {
+  message_id: string;
+  text: string;
+}
+
+export interface ChatMessageComplete {
+  message_id: string;
+  role: ChatRole;
+  content: string;
+}
+
+export interface ChatToolCallPayload {
+  call_id: string;
+  name: string;
+  arguments: JsonObject;
+  /** A short human phrase from the registry — "Reading the parse report". It is
+   *  the tool's own label, not a lookup table the frontend maintains, because a
+   *  table here would go stale the moment a tool is added. */
+  label: string;
+}
+
+export interface ChatToolResultPayload {
+  call_id: string;
+  name: string;
+  ok: boolean;
+  /** Always present. The factual line the model read. */
+  summary: string;
+  /** The structured payload a card is rendered from. */
+  data: JsonObject | null;
+  /** The envelope's `error` when the tool failed. Optional on the wire; the
+   *  summary is the fallback, and one of the two is always shown in full. */
+  error?: string | null;
+}
+
+/** `{kind: "parse", ...}` from the watcher, off `IngestPipeline.status()`. */
+export interface ChatParseProgress {
+  kind: 'parse';
+  state: 'queued' | 'running' | 'complete' | 'failed' | null;
+  /** The backend's own stage name — `references`, `arbiter`, `persist`. */
+  stage: string | null;
+  /** The real stage-position fraction. Null when the stage cannot report one. */
+  fraction: number | null;
+  filename: string | null;
+  error: string | null;
+}
+
+/**
+ * `{kind: "review", ...}` — the whole `ReviewStats` payload.
+ *
+ * All the secondary counters, not just `verified / total`. They are the
+ * difference between "4 findings" and "4 findings, 11 candidates killed on the
+ * quote check, 6 abstracts unavailable", which are different reports about the
+ * same run.
+ */
+export interface ChatReviewProgress {
+  kind: 'review';
+  verified: number;
+  total: number;
+  findings_emitted: number | null;
+  candidates_considered: number | null;
+  quote_check_failures: number | null;
+  unverifiable_no_abstract: number | null;
+  claims_without_candidates: number | null;
+  error: string | null;
+}
+
+export type ChatProgress = ChatParseProgress | ChatReviewProgress;
+
+// --- the confirmation gate ---
+
+/** What `propose_edit` returns and what a commit confirmation pins itself to. */
+export interface ChangeSetProposal {
+  change_set_id: string;
+  doc_id: string;
+  base_version: number;
+  changes: EvaluatedChange[];
+  rejected: RejectedOperation[];
+  message: string | null;
+}
+
+export interface RevertProposal {
+  doc_id: string;
+  to_version: number;
+  current_version: number;
+}
+
+export interface StyleProposal {
+  doc_id: string;
+  style_id: string;
+  current_style_id: string | null;
+}
+
+/**
+ * `awaiting_confirmation` — the structured proposal, so the screen renders the
+ * real diff rather than the agent's summary of it.
+ *
+ * `unrecognised` is not a failure branch: a confirmation we cannot render as a
+ * card is still a confirmation, and it is shown as the agent's question with the
+ * raw proposal behind a disclosure. Swallowing it would leave a Yes button
+ * approving something the screen never displayed.
+ */
+export type ChatConfirmation =
+  | { kind: 'commit_change_set'; proposal: ChangeSetProposal }
+  | { kind: 'export_latex'; proposal: ExportManifest }
+  | { kind: 'revert_document'; proposal: RevertProposal }
+  | { kind: 'set_style'; proposal: StyleProposal }
+  | { kind: 'unrecognised'; name: string; proposal: JsonObject };
+
+export interface ChatDone {
+  message_id: string | null;
+  tokens_used: number | null;
+  budget_remaining: number | null;
+}
+
+export interface ChatFailure {
+  /** The server's own words. Never replaced with a friendlier guess. */
+  message: string;
+  detail: string | null;
+  /**
+   * A *named* `error` event from the server is terminal and carries a reason. A
+   * *bare* transport Event may reconnect. `subscribeReview` learned that the
+   * hard way — treating the first as the second turned a named backend failure
+   * into "Reconnecting…" forever.
+   */
+  recoverable: boolean;
+}
+
+export type ChatEvent =
+  | { type: 'message_start'; data: ChatMessageStart }
+  | { type: 'message_delta'; data: ChatMessageDelta }
+  | { type: 'message'; data: ChatMessageComplete }
+  | { type: 'tool_call'; data: ChatToolCallPayload }
+  | { type: 'tool_result'; data: ChatToolResultPayload }
+  | { type: 'progress'; data: ChatProgress }
+  | { type: 'awaiting_confirmation'; data: ChatConfirmation }
+  | { type: 'done'; data: ChatDone }
+  | { type: 'error'; data: ChatFailure }
+  | { type: 'heartbeat' };
+
+export interface ChatHandle {
+  close(): void;
+}
+
+// --- tool result payloads, one interface per tool that returns a card ---
+
+export interface ParseProgressData {
+  state: 'queued' | 'running' | 'complete' | 'failed';
+  stage: string | null;
+  fraction: number | null;
+  elapsed_s: number | null;
+  error: string | null;
+}
+
+export interface ParseReportData {
+  doc_id: string;
+  counts: TierCounts;
+  /** Present only for `include: "full"`. */
+  references: ParsedReference[] | null;
+  orphan_markers: OrphanMarker[] | null;
+  reconciliation_notes: string[] | null;
+  style_id: string | null;
+}
+
+/**
+ * `get_document_outline`. `is_draft` is the §5 guarantee: the IR published at
+ * `tei_to_ir`, before references were reconciled, so the agent says "this is the
+ * text as extracted" rather than presenting a half-finished paper as finished.
+ */
+export interface DocumentOutlineData {
+  doc_id: string;
+  title: string | null;
+  version: number | null;
+  sections: Section[];
+  block_count: number | null;
+  span_count: number | null;
+  is_draft: boolean;
+}
+
+export interface ReviewPlanData {
+  /** The strategies that will actually run for this document, introspected. */
+  strategies: string[];
+  all_strategies: string[] | null;
+  rerank_keep: number | null;
+  verify_keep: number | null;
+  citability_min: number | null;
+  estimated_claims: number | null;
+  estimated_duration_s: number | null;
+  notes: string[] | null;
+}
+
+export interface ReviewProgressData {
+  state: string | null;
+  verified: number;
+  total: number;
+  findings_emitted: number | null;
+  candidates_considered: number | null;
+  quote_check_failures: number | null;
+  unverifiable_no_abstract: number | null;
+  claims_without_candidates: number | null;
+}
+
+export interface FindingsData {
+  findings: Finding[];
+  total: number | null;
+}
+
+export interface SourceData {
+  source: SourceRecord;
+}
+
+export interface EvidenceHit {
+  kind: 'span' | 'abstract' | 'claim' | 'finding';
+  ref_id: string;
+  text: string;
+  score: number;
+}
+
+export interface EvidenceSearchData {
+  results: EvidenceHit[];
+  /** "the index is still building, these results are partial" is a real answer;
+   *  silently returning fewer hits is not. */
+  index_status: string | null;
+}
+
+export interface SectionTextData {
+  section_id: string;
+  title: string | null;
+  text: string;
+  is_draft: boolean;
+}
+
+export interface ExportedFileData {
+  filename: string;
+  byte_size: number;
+  download_url: string;
+  style_id: string | null;
+  style_uncertain: boolean;
+}
+
+/**
+ * A tool result whose `data` has been checked against the tool it came from.
+ *
+ * The discriminant is the tool name, so a component switches on something the
+ * registry owns rather than sniffing fields. `unrecognised` carries the summary
+ * and nothing else — see the note at the top of this section.
+ */
+export type ToolPayload =
+  | { card: 'parse_progress'; data: ParseProgressData }
+  | { card: 'parse_report'; data: ParseReportData }
+  | { card: 'outline'; data: DocumentOutlineData }
+  | { card: 'review_plan'; data: ReviewPlanData }
+  | { card: 'review_progress'; data: ReviewProgressData }
+  | { card: 'findings'; data: FindingsData }
+  | { card: 'source'; data: SourceData }
+  | { card: 'evidence'; data: EvidenceSearchData }
+  | { card: 'section_text'; data: SectionTextData }
+  | { card: 'change_set'; data: ChangeSetProposal }
+  | { card: 'commit'; data: CommitResult }
+  | { card: 'export_manifest'; data: ExportManifest }
+  | { card: 'exported_file'; data: ExportedFileData }
+  | { card: 'none' };
+
 // ---------- health (HR-2) ----------
 export type ApiStatusKind = 'ok' | 'config_error' | 'unreachable';
 
@@ -304,4 +652,12 @@ export interface ApiStatus {
   detail: string | null;
 }
 
-export type { SourceRecord, ParsedReference, DocumentIR, Finding, OrphanMarker, ProposedChange };
+export type {
+  SourceRecord,
+  ParsedReference,
+  DocumentIR,
+  Finding,
+  OrphanMarker,
+  ProposedChange,
+  Section,
+};

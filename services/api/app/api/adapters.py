@@ -231,6 +231,153 @@ class LatexExporter:
         ).latex
 
 
+# --------------------------------------------------------------------------- orchestrator
+#
+# The orchestrator's ports are satisfied by the same collaborators the deterministic
+# screens use, reshaped. Nothing below re-implements a decision: `CommandGateway` runs the
+# same command loop `POST /commands` runs, `VersionGateway` runs the same commit
+# `POST /approve` runs, and `ExportGateway` reads the same manifest the export screen
+# reads. If the chat and a screen could ever disagree about what an operation does, one of
+# them would be lying to the user, and which one would depend on where they happened to be
+# looking.
+
+
+class CommandGatewayAdapter:
+    """`app/agent/`'s command loop and change-set store → `CommandGateway`.
+
+    Returns dicts rather than `ProposedChangeSet`, because `app/orchestrator/` must not
+    import `app/agent/`. The dump is not a lossy summary — it is the same payload the
+    edit console renders, so the chat can show the real diff and the real citation ledger.
+    """
+
+    def __init__(self, services: Any) -> None:
+        self._services = services
+
+    async def propose(self, document: Document, instruction: str) -> dict:
+        change_set = await self._services.command_loop().run(document, instruction)
+        self._services.change_set_store().put(change_set)
+        return change_set.model_dump(mode="json")
+
+    def get_change_set(self, change_set_id: str) -> dict:
+        return self._services.change_set_store().get(change_set_id).model_dump(mode="json")
+
+
+class VersionGatewayAdapter:
+    """`app/agent/versioning.py` → `VersionGateway`.
+
+    The one path from the chat to a written document version. It builds the
+    `ApprovalRequest` from the *stored* change set and the caller's approvals, and it lets
+    `VersionConflict`, `ApprovalError` and `KernelRejection` propagate — the orchestrator
+    turns each into a distinct refusal the agent explains, and swallowing any of them here
+    would collapse three different answers into one.
+    """
+
+    def __init__(self, services: Any) -> None:
+        self._services = services
+
+    async def commit(
+        self,
+        change_set_id: str,
+        *,
+        base_version: int,
+        approved_change_ids: list[str],
+        rejected_change_ids: list[str],
+        orphan_decisions: list[dict],
+    ) -> dict:
+        from app.agent.versioning import ApprovalRequest, OrphanDecision  # noqa: PLC0415
+
+        store = self._services.change_set_store()
+        change_set = store.get(change_set_id)
+        result = await self._services.versions().commit(
+            change_set,
+            ApprovalRequest(
+                change_set_id=change_set_id,
+                base_version=base_version,
+                approved_change_ids=approved_change_ids,
+                rejected_change_ids=rejected_change_ids,
+                orphan_decisions=[
+                    OrphanDecision.model_validate(decision) for decision in orphan_decisions
+                ],
+            ),
+        )
+        if result.committed:
+            store.discard(change_set_id)
+        return result.model_dump(mode="json")
+
+    async def revert(self, doc_id: str, to_version: int) -> dict:
+        result = await self._services.versions().revert(doc_id, to_version)
+        return result.model_dump(mode="json")
+
+    async def set_style(self, document: Document) -> int:
+        stored = await self._services.require("documents").put_version(
+            document, parent_version=document.version
+        )
+        return stored.version
+
+
+class ExportGatewayAdapter:
+    """B1's exporter and the export manifest → `ExportGateway`.
+
+    `download_url` points at the existing `GET /export.tex` route rather than at bytes
+    embedded in a chat message. The file the agent hands over and the file the export
+    screen hands over are then the same file from the same renderer, and the browser
+    downloads it the way it downloads everything else.
+    """
+
+    def __init__(self, services: Any) -> None:
+        self._services = services
+
+    async def _document(self, doc_id: str, version: int | None) -> Document:
+        document = await self._services.require("documents").get(doc_id, version)
+        if document is None:
+            raise KeyError(
+                f"document {doc_id!r}"
+                + (f" version {version}" if version is not None else "")
+                + " does not exist"
+            )
+        return document
+
+    async def manifest(self, doc_id: str, version: int | None = None) -> dict:
+        from app.api.routes.documents import build_export_manifest  # noqa: PLC0415
+
+        document = await self._document(doc_id, version)
+        return build_export_manifest(doc_id, document).model_dump(mode="json")
+
+    async def to_latex(self, doc_id: str, version: int | None = None) -> dict:
+        document = await self._document(doc_id, version)
+        latex = await self._services.require("exporter").to_latex(document)
+        query = f"?version={document.version}"
+        return {
+            "filename": f"{doc_id}-v{document.version}.tex",
+            "byte_size": len(latex.encode("utf-8")),
+            "download_url": f"/api/documents/{doc_id}/export.tex{query}",
+            "version": document.version,
+            "style_id": document.metadata.style_id,
+            "style_uncertain": bool(document.metadata.style_id)
+            and document.metadata.style_ambiguous,
+        }
+
+
+class RetrievalIntrospectorAdapter:
+    """B2's `CandidateGenerator` → `RetrievalIntrospector`.
+
+    This is the adapter that makes `describe_review_plan` honest. It asks the generator
+    which strategies will run for *this* document, using the generator's own rule, rather
+    than restating that rule here. Restating it is exactly how `retrieval.py` once
+    reported an unauthenticated `s2_snippet` as having run: a second copy of a rule goes
+    wrong the moment the first one grows a case the copy does not know about.
+    """
+
+    def __init__(self, retrieval: Any) -> None:
+        self._retrieval = retrieval
+
+    async def strategies_for(self, doc_id: str) -> tuple[list[str], list[str]]:
+        generator = self._retrieval.generator
+        context = await self._retrieval.prime(doc_id)
+        will_run = list(generator.strategies_for(context))
+        return will_run, [s for s in generator.ALL_STRATEGIES if s not in will_run]
+
+
 def csl_lookup_for(source_reader: Any):
     """Build the `source_id → CSL-JSON` mapping B1's exporter wants, from B2's store.
 
@@ -250,11 +397,15 @@ def csl_lookup_for(source_reader: Any):
 
 
 __all__ = [
+    "CommandGatewayAdapter",
     "DocumentStoreAdapter",
+    "ExportGatewayAdapter",
     "FingerprintStoreAdapter",
     "LatexExporter",
     "PandocRenderProbe",
+    "RetrievalIntrospectorAdapter",
     "SourceReaderAdapter",
+    "VersionGatewayAdapter",
     "csl_lookup_for",
     "maybe_await",
 ]

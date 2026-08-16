@@ -862,3 +862,188 @@ and disclosed, user may override" — the detector's contract is unchanged, so t
 about scoring, the shortlist and the exposed numeric score all still hold as written. **goal.md
 is owner-edited, and that one clause needs amending to match.** Logged in memory.md under
 Interface Requests / Blockers.
+
+---
+
+## ADR-031 — Tool calling belongs in the one LLM client, not beside it
+
+**Status:** Accepted
+
+**Context.** The orchestrator needs something `app/core/llm.py` did not do: a multi-turn message
+list, native tool schemas, and streamed text deltas. `complete(role, prompt, schema)` is a
+single-shot structured-output call and cannot express any of it.
+
+The obvious move is a small OpenAI client inside `app/orchestrator/` — it needs different
+parameters, a different response shape, and streaming, none of which the existing method wants.
+That move loses four things simultaneously, and each of them is a property of the *module* rather
+than of the SDK: per-role model routing (ADR-015), the per-document token budget (ADR-015),
+record/replay that raises on a miss (ADR-018), and the single place a model ID may be named. A
+second call site does not weaken those guarantees, it exempts itself from them, and the exemption
+is invisible from anywhere except the file that took it.
+
+**Decision.** `converse()` is added to `OpenAILLMClient`, alongside `complete()` and `embed()`.
+
+- Streaming when `on_text` is supplied. Text deltas are emitted as they arrive; **tool call
+  fragments are assembled by index**, because OpenAI splits one call's `arguments` across many
+  chunks and identifies each only by its position. Treating a chunk as a call yields a call whose
+  arguments are the first eight characters of a JSON object.
+- `recording_key` gains a sibling, `conversation_key`, covering the **whole message list and the
+  tool schemas**. Keying on the last message alone would replay one recording for two different
+  conversations that happen to end the same way, and would do it silently, because the response
+  would still be well-formed.
+- The recording holds the **assembled `AssistantTurn`**, never the raw chunks: chunk boundaries
+  are a property of one network session, not of the answer, and recording them would tie the
+  fixture to the SDK's framing.
+- `finish_reason == "length"` is a refusal, as in `_call_openai`. It matters more here: a cut
+  can land mid tool-call arguments and produce a syntactically valid object with a missing field,
+  which the agent would then act on.
+- `TokenBudgetExceeded` propagates. The orchestrator turns it into a visible chat error; what it
+  must never become is a conversation that quietly stops mid-sentence.
+- `LLMRole.ORCHESTRATE` is added to Appendix A and pinned to `gpt-5.5` in `config.py`, on the
+  same reasoning as `model_plan`: low volume, high consequence. One call per turn, and each one
+  decides whether to commit an edit, spend six minutes of provider budget, or hand over a file.
+
+**Consequences.** `app/core/contracts.py` gains one enum member, so goal.md Appendix A gains the
+same line — the frozen-contract test compares them byte for byte and is the reason both were
+edited together. Two tests pinned to six roles now assert seven; that is the assertion doing its
+job, not collateral damage.
+
+---
+
+## ADR-032 — Conversations are persisted, and the parse report with them
+
+**Status:** Accepted (extends ADR-020; supersedes the "parse report is in-process" limitation)
+
+**Context.** `app/agent/store.py` keeps proposed change sets in memory and argues, correctly, that
+losing one costs the user a re-issued command. That argument does not transfer to a conversation.
+A chat is the *record* of what was asked and what the agent answered; it accumulates across the
+six-to-eight minutes a review takes plus however long an editing conversation runs, and losing it
+loses the reasoning behind an edit the user may be midway through approving.
+
+The parse report had the same shape of problem and was already a known limitation: held only in
+`IngestRegistry`, so after a restart `/api/documents/{id}/parse` raised for every document
+ingested before it. Tolerable when it backed one screen the user could re-trigger by re-uploading.
+Not tolerable once a conversation outlives the process — the agent would come back able to read
+its own history and unable to answer a single question about the paper it was discussing.
+
+**Decision.** Four tables, all append-only, created by `create_all()` at startup (ADR-020).
+
+- `chat_conversations`, `chat_messages`, `chat_events`.
+- `parse_reports`, keyed by `(doc_id, version)`.
+
+**Two logs rather than one**, deliberately. `chat_messages` is the model's view — what gets
+replayed into `converse()`. `chat_events` is the browser's — what gets replayed into a
+reconnecting `EventSource`. They are not the same data at different resolutions: a `message_delta`
+is a rendering event with no place in the model's context, and a `role="tool"` message carries a
+payload the UI renders as a card rather than as text. Deriving either from the other means a lossy
+transform on every read, and the failure mode is a refresh that repaints a conversation subtly
+unlike the one the user was looking at. Storage is cheap; a transcript that changes when you
+reload it is not.
+
+The registry stays the **primary** read for the parse report and the table is the fallback. That
+order matters: preferring the table would serve a stale report for a document being re-ingested
+right now. Report persistence failing is logged and does not fail the ingest — the paper is parsed
+and stored by that point, and refusing to complete because a derived cache could not be written
+would turn a durability regression into a lost parse.
+
+**Consequences.** `parse_report()` becomes async, which the routes already tolerated through
+`maybe_await`. The README's "a restart takes the parse report with it" limitation is closed for
+completed ingests; in-flight work still dies with the process, which is ADR-022's scope and
+unchanged. Three modules join `_TABLE_MODULES` in `app/api/main.py` — a table whose module is
+never imported is absent from `Base.metadata` and is silently not created.
+
+---
+
+## ADR-033 — The confirmation gate is mechanical, and the agent narrates rather than decides
+
+**Status:** Accepted
+
+**Context.** The product decision for the agentic flow is that **a chat confirmation is enough to
+commit**: there is no separate approval screen. Everything the edit console guarantees visually —
+nothing written without explicit approval, every orphaned citation anchor decided one by one — now
+rests on the runtime.
+
+The tempting implementation is a line in the system prompt. It does not work. "Ask before
+committing" is satisfied by a model that writes *"Shall I commit? Yes, committing."* in a single
+turn, and it is one jailbreak away from committing an edit nobody saw.
+
+A second, quieter version of the same problem: what the agent *says* when a background job
+finishes. The natural implementation is `if parse_complete: send("Parsing is done, want to see
+it?")`, which makes the product a state machine with a chat skin and puts our copy in the agent's
+mouth.
+
+**Decision.** Three mechanisms, none of them in a prompt.
+
+1. **The gate.** A tool with `confirm=True` executes only when a **user message arrived after the
+   specific proposal it names was shown**. Keyed on the proposal — `change_set:cs-123`, not "an
+   edit" — so answering yes to one cannot authorise another. Absence of a key is a refusal, not a
+   pass: the first user message in a conversation must not authorise a commit, because "the user
+   has spoken at some point" is not "the user was shown this and answered". The decision is
+   computed for every call in a turn **before any of them runs**, so a proposal made earlier in
+   the same turn cannot authorise a commit later in it. A tool that has no proposing tool of its
+   own (`revert_document`) is authorised by the runtime's own earlier refusal, which is the thing
+   the user was shown. Running a confirmable tool consumes its authorisation, so one yes does not
+   license a second commit. Orphaned anchors are *not* covered by any of this: `commit` refuses
+   while one is undecided and keeps refusing (HR-5), because a plain yes is an answer to a
+   different question.
+2. **System notices.** A state transition appends a `system_notice` carrying facts and **no
+   instructions**, then runs a turn. The notice says forty-seven references resolved into four
+   tiers; the model writes the sentence. What to *do* about a finished parse — announce it,
+   summarise the counts, offer the full result rather than dumping it — is standing policy in the
+   system prompt. If a notice ever contains "tell the user", the agent has become a template
+   engine.
+3. **Progress is not a conversation.** Ticks go to the event stream as `progress` and run no
+   turn. One turn per tick would spend the document's token budget narrating a progress bar.
+
+Alongside these, ADR-033 also covers **answering during parsing**: `ingest_tei` gains an
+`on_document` callback fired immediately after `tei_to_ir`, minutes before references, repair,
+arbitration and style. The draft IR is published on the `IngestRecord`, and the tools that read
+document text serve it when nothing is persisted yet — **always with `is_draft: true`**, so the
+agent says "this is the text as extracted; the bibliography is still being reconciled". Before
+`tei_to_ir` the honest answer is that only the filename is known, and the tools say exactly that
+rather than fabricating an intermediate.
+
+**Consequences.** The gate lives in `TurnState`, which is in-memory and per-process. A restart
+therefore forgets that a proposal was shown, and the next commit is refused until the user is
+asked again — the safe direction, and stated here so it is a decision rather than an accident.
+
+---
+
+## ADR-034 — The evidence index is cosine similarity in Python, and nothing more
+
+**Status:** Accepted
+
+**Context.** Structured lookup answers most of what the agent is asked: "how many references
+resolved?" is the parse report, "what does finding fnd_abc say?" is `get_finding`. What it cannot
+answer is the question a researcher actually asks — *"which part of my paper does this finding
+attack?"*, *"what else is in that reference?"* — because the agent has no way to guess a `span_id`
+from a description of what the sentence says.
+
+**Decision.** One table, `doc_embeddings`, holding a 512-dimension vector per span, abstract,
+claim and finding, mirroring `app/ir/fingerprints.py`: insert-only, vectors as JSONB, embeddings
+through `LLMClient.embed()` at `settings.embedding_dimensions` (ADR-016). Search is cosine
+similarity computed in Python over **one document's rows**.
+
+**No pgvector, no vector service, no graph store.** A paper is a few hundred spans and a few
+hundred abstracts, the corpus for any query is one document, and a 512-float dot product over
+~800 rows is a fraction of a millisecond. An index type or a service to accelerate a
+sub-millisecond scan is cost with no benefit and a new thing that can be down. If a
+multi-document corpus ever exists — searching across every paper a lab has uploaded — pgvector is
+the scale path, and the table is already shaped for it: `JSONB` becomes `vector(512)`, add an
+ivfflat index, and nothing above the row store changes.
+
+**One embedding model.** A second would produce vectors that score plausibly against the first's
+and mean nothing — cosine similarity between two embedding spaces is not an error, it is noise
+with a number attached.
+
+**The build has a status and search reports it.** An index still building returns fewer hits, and
+fewer hits is indistinguishable from a thorough search of a paper that does not discuss the topic.
+"The index is still building, these results are partial" is a real answer; silently returning a
+short list is the ADR-010 false negative one layer up. Rows already indexed are not re-embedded:
+review output arrives in waves, and re-embedding the paper's spans on each wave would multiply the
+bill by the number of waves.
+
+**Consequences.** Search returns `{kind, ref_id, text, score}` so the agent follows up with the
+exact tool for that kind. It is a router into structured data, not a substitute for it, and the
+tool description says so — a hit is never quoted without being read through `read_section`,
+`get_span` or `get_source`.

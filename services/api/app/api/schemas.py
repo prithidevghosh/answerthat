@@ -145,9 +145,37 @@ class ReviewRequest(BaseModel):
     force: bool = False
 
 
+class ConversationHandle(BaseModel):
+    """What the chat screen needs to connect.
+
+    `stream` is handed back rather than composed by the client, for the reason
+    `/api/reviews/{job_id}/stream` — a path no router has ever served — exists to teach:
+    a client that builds URLs is a client that can build one nobody serves, and it fails
+    at connect time rather than at build time.
+    """
+
+    conversation_id: str
+    doc_id: str
+    stream: str
+    poll: str
+
+
+class ChatMessageRequest(BaseModel):
+    text: str
+
+
+class ChatAccepted(BaseModel):
+    conversation_id: str
+    stream: str
+    accepted: Literal[True] = True
+
+
 __all__ = [
     "ApprovalPayload",
+    "ChatAccepted",
+    "ChatMessageRequest",
     "CommandRequest",
+    "ConversationHandle",
     "JobAccepted",
     "ParseStatus",
     "RevertRequest",

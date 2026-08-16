@@ -159,7 +159,10 @@ def test_every_role_resolves_to_a_pinned_model() -> None:
 
     s = _settings(**{k.lower(): v for k, v in ALL_KEYS.items()})
     resolved = {role: s.model_for(role) for role in LLMRole}
-    assert len(resolved) == 6
+    # Seven since ADR-031 added ORCHESTRATE. The count is asserted rather than derived
+    # from the enum on purpose: a new role that nobody pinned a model for would otherwise
+    # slip through, and `model_for` would KeyError at the first call in production.
+    assert len(resolved) == 7
     assert all(model for model in resolved.values())
     # Verification is the judgment the product's honesty rests on; it must not be the
     # cheap model (ADR-015 is explicit about this one).

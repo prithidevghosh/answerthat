@@ -178,6 +178,7 @@ class LLMRole(str, Enum):
     VERIFY = "verify"                  # gpt-5.5       — accuracy-critical, do not economise
     PLAN = "plan"                      # gpt-5.5
     TRANSFORM = "transform"            # gpt-5.4       — rewriting the user's prose
+    ORCHESTRATE = "orchestrate"        # gpt-5.5       — tool-call routing over a conversation
 
 class LLMClient(Protocol):
     """The ONLY path to OpenAI. Structured output is mandatory for every data-returning

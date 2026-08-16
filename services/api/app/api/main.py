@@ -21,12 +21,12 @@ from fastapi.responses import JSONResponse
 from app.agent.store import ChangeSetNotFound
 from app.agent.versioning import ApprovalError, VersionConflict
 from app.api.deps import DependencyUnavailable, Services, build_services
-from app.api.routes import documents, edits, jobs, review, sources
+from app.api.routes import chat, documents, edits, jobs, review, sources
 from app.api.schemas import VersionConflictDetail
 from app.core.config import DEFAULT_CORS_ORIGINS, unauthenticated_providers
 from app.core.contracts import KernelRejection, MissingAPIKeyError, ParseFailure
 from app.core.db import create_all, dispose_engine
-from app.core.errors import ExportFailure, IRVersionConflict
+from app.core.errors import ExportFailure, IRVersionConflict, StyleDetectionFailure
 
 log = logging.getLogger("app.api")
 
@@ -53,6 +53,7 @@ def create_app(services: Services | None = None) -> FastAPI:
     app.include_router(edits.router)
     app.include_router(jobs.router)
     app.include_router(sources.router)
+    app.include_router(chat.router)
 
     @app.get("/api/health", tags=["meta"])
     async def health() -> dict:
@@ -62,6 +63,9 @@ def create_app(services: Services | None = None) -> FastAPI:
                 "documents", "sources", "render_probe", "exporter", "retrieval",
                 "verifier", "claims", "review", "ingest", "style",
                 "embedder", "text_model", "structured_model", "fingerprints", "jobs",
+                # The agentic flow. An unbound orchestrator shows up here rather than as
+                # a mysterious 503 the first time someone opens the chat screen.
+                "orchestrator", "conversations", "evidence_index", "watcher",
             )
         }
         missing = sorted(name for name, ok in bound.items() if not ok)
@@ -115,6 +119,9 @@ _TABLE_MODULES = (
     "app.ir.fingerprints",
     "app.providers.cache",
     "app.providers.source_store",
+    "app.parsing.reports",
+    "app.orchestrator.session",
+    "app.orchestrator.index",
 )
 
 
@@ -250,6 +257,26 @@ def _install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ParseFailure)
     async def _parse(_request: Request, exc: ParseFailure) -> JSONResponse:
         return JSONResponse(status_code=422, content={"error": "parse_failure", "detail": str(exc)})
+
+    @app.exception_handler(StyleDetectionFailure)
+    async def _style(_request: Request, exc: StyleDetectionFailure) -> JSONResponse:
+        """Style detection refuses on a condition it understands — no completed ingest to
+        re-score from — and says so. It reached the client as a bare 500, which named
+        nothing and read as a broken service rather than as a stated limit. 409 for the
+        same reason `ExportFailure` gets one: the document is fine, this particular
+        question cannot be answered right now."""
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "style_unavailable",
+                "detail": str(exc),
+                "hint": (
+                    "Re-scoring reads the in-process ingest record, which does not survive an "
+                    "API restart. The style recorded on the document is still readable through "
+                    "GET /api/documents/{doc_id} and is what an export renders with (ADR-030)."
+                ),
+            },
+        )
 
     @app.exception_handler(ExportFailure)
     async def _export(_request: Request, exc: ExportFailure) -> JSONResponse:

@@ -21,6 +21,7 @@ from app.api.schemas import (
     VersionInfo,
 )
 from app.core.contracts import Document
+from app.core.errors import StyleDetectionFailure
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -146,9 +147,7 @@ async def parse_view(request: Request, doc_id: str, version: int | None = None) 
     document = await load_document(svc, doc_id, version)
     report = await maybe_await(svc.require("ingest").parse_report(doc_id))
 
-    style = None
-    if svc.style is not None:
-        style = await maybe_await(svc.style.detect(doc_id))
+    style = await _style_for_parse_view(svc, doc_id, document)
 
     return {
         "document": document.model_dump(mode="json"),
@@ -158,6 +157,42 @@ async def parse_view(request: Request, doc_id: str, version: int | None = None) 
         "quarantine": [entry.model_dump(mode="json") for entry in document.quarantine],
         "style": style,
     }
+
+
+async def _style_for_parse_view(svc: Services, doc_id: str, document: Document) -> dict | None:
+    """The style for the parse screen, from the detector or from the document.
+
+    `StyleService.detect` re-scores from the in-process ingest record, so after an API
+    restart it raises for every document ingested before it. That used to be masked: the
+    parse report raised first and the route returned a 422. Now that the report is
+    persisted (ADR-032) this became the *only* thing standing between a restarted API and
+    a readable parse screen, and it did it as a 500.
+
+    The document itself carries the answer. ADR-030 persists `metadata.style_id` onto the
+    IR precisely so the document is self-sufficient, and that value is what export renders
+    with. So a failed re-score falls back to what was recorded — and says which it is:
+    `source: "recorded"` with the detector's own reason, never a score presented as if it
+    had just been measured. A fresh score and a stored one are different claims (HR-3).
+    """
+    if svc.style is None:
+        return None
+    try:
+        return await maybe_await(svc.style.detect(doc_id))
+    except StyleDetectionFailure as exc:
+        if not document.metadata.style_id:
+            return None
+        return {
+            "style_id": document.metadata.style_id,
+            "score": document.metadata.style_confidence,
+            "ambiguous": document.metadata.style_ambiguous,
+            "chosen_by_user": False,
+            "source": "recorded",
+            "detail": (
+                f"This is the style recorded on version {document.version}, not a fresh "
+                f"measurement: {exc}"
+            ),
+            "shortlist": [],
+        }
 
 
 @router.get("/{doc_id}", response_model=Document)
@@ -250,16 +285,24 @@ def _export_filename(doc_id: str, version: int) -> str:
 async def export_manifest(
     request: Request, doc_id: str, version: int | None = None
 ) -> ExportManifest:
-    """Describe the export before the user commits to it.
+    """Describe the export before the user commits to it."""
+    document = await load_document(services(request), doc_id, version)
+    return build_export_manifest(doc_id, document)
+
+
+def build_export_manifest(doc_id: str, document: Document) -> ExportManifest:
+    """The manifest for one document version.
 
     Counted off the IR itself rather than by rendering: the manifest is what the export
     page loads on arrival, and rendering a whole paper through Pandoc to fill in three
     numbers would make the page slow and would fail for the very documents that most need
     the page to explain why (no style chosen yet).
-    """
-    svc = services(request)
-    document = await load_document(svc, doc_id, version)
 
+    A function rather than only a route because the agentic flow discloses the same
+    manifest before handing the user a file, and it must be the *same* disclosure. Two
+    implementations of "how many figures become placeholders" would eventually disagree,
+    and the one the user was shown would be whichever screen they happened to be on.
+    """
     placeholders: dict[str, int] = {"figure": 0, "table": 0, "equation": 0}
     source_ids: set[str] = set()
     for section in document.sections:

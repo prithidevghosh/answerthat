@@ -43,6 +43,7 @@ class FakeSettings:
     model_verify = "gpt-5.5"
     model_plan = "gpt-5.5"
     model_transform = "gpt-5.4"
+    model_orchestrate = "gpt-5.5"
 
     def __init__(self, recordings: Path, mode: str = "live", key: str = "sk-test") -> None:
         self.llm_recordings_dir = recordings
@@ -57,6 +58,7 @@ class FakeSettings:
             LLMRole.VERIFY: self.model_verify,
             LLMRole.PLAN: self.model_plan,
             LLMRole.TRANSFORM: self.model_transform,
+            LLMRole.ORCHESTRATE: self.model_orchestrate,
         }[role]
 
 
@@ -130,7 +132,12 @@ async def test_each_role_uses_its_pinned_model(tmp_path: Path) -> None:
     for role in LLMRole:
         await client.complete(role, "prompt", SCHEMA)
     used = [call["model"] for call in fake.completion_calls]
-    assert used == ["gpt-5.4-mini", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.5", "gpt-5.4"]
+    # In `LLMRole` declaration order. ORCHESTRATE is last and is pinned to the expensive
+    # model for the same reason PLAN is: low volume, and every call decides whether to
+    # commit an edit or spend six minutes of provider budget (ADR-031).
+    assert used == [
+        "gpt-5.4-mini", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.5", "gpt-5.4", "gpt-5.5"
+    ]
 
 
 async def test_structured_output_is_mandatory(tmp_path: Path) -> None:

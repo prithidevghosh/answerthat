@@ -134,6 +134,11 @@ class Settings(BaseSettings):
     model_verify: str = "gpt-5.5"                 # accuracy-critical — do not economise here
     model_plan: str = "gpt-5.5"                   # low volume, high consequence
     model_transform: str = "gpt-5.4"              # rewriting the researcher's own prose
+    # ADR-031. Same reasoning as `model_plan`: low volume, high consequence. The
+    # orchestrator makes one call per turn, and each one decides whether to commit an
+    # edit, spend six minutes of provider budget on a review, or hand the user a file.
+    # A cheaper model here saves very little and misroutes the expensive decisions.
+    model_orchestrate: str = "gpt-5.5"            # tool-call routing over a conversation
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 512               # ADR-016
 
@@ -155,6 +160,41 @@ class Settings(BaseSettings):
     # truncating the review (ADR-015).
     doc_token_budget: int = Field(default=2_000_000, ge=1)
 
+    # ---------- orchestrator (ADR-031 / ADR-032 / ADR-033 / ADR-034) ----------
+    # Every one of these is a limit, so by ADR-024 it lives here and nowhere else. The
+    # agent loop, the watcher and the evidence index all read them from settings.
+    #
+    # How many model turns one user message may consume before the runtime stops and
+    # says so. High enough for "read the report, list the findings, fetch two sources,
+    # answer" in one turn; low enough that a model stuck in a retry loop costs bounded
+    # money and stops visibly rather than silently.
+    orchestrator_max_iterations: int = Field(default=12, ge=1)
+    # Approximate token ceiling for the conversation handed to the model. When the
+    # history approaches it, the runtime drops *old tool results* — never a user message
+    # and never the system prompt — and logs what it dropped (ADR-032).
+    orchestrator_context_budget_tokens: int = Field(default=120_000, ge=1_000)
+    # Characters per token, for the cheap estimate the trimmer runs on. Deliberately not
+    # a tokenizer: a wrong-by-15% estimate that costs nothing beats a per-turn tokenizer
+    # dependency, and the budget above is set with the slack to absorb it.
+    orchestrator_chars_per_token: int = Field(default=4, ge=1)
+    # How often the watcher polls ingest progress while a parse is running. This drives
+    # UI `progress` events only — never an agent turn (ADR-033).
+    orchestrator_watch_interval_s: float = Field(default=1.0, gt=0.0)
+    # Default `k` for `search_evidence`, and the ceiling a model may ask for.
+    orchestrator_search_k: int = Field(default=8, ge=1)
+    orchestrator_search_k_max: int = Field(default=25, ge=1)
+    # How many findings/claims/references one list call returns by default, and at most.
+    # A tool that returns forty references in one result burns context the conversation
+    # needs later; the model pages instead.
+    orchestrator_page_size: int = Field(default=20, ge=1)
+    orchestrator_page_size_max: int = Field(default=100, ge=1)
+    # Characters of span text embedded per row by the evidence index. Spans are
+    # sentences (ADR-026), so this is a guard against a pathological block, not a
+    # routine truncation.
+    orchestrator_index_text_chars: int = Field(default=2_000, ge=100)
+    # Rows embedded per `embed()` call while the index builds.
+    orchestrator_index_batch: int = Field(default=64, ge=1)
+
     def allowed_origins(self) -> list[str]:
         """Origins the browser may call this API from, in CORSMiddleware's order.
 
@@ -173,6 +213,7 @@ class Settings(BaseSettings):
             LLMRole.VERIFY: self.model_verify,
             LLMRole.PLAN: self.model_plan,
             LLMRole.TRANSFORM: self.model_transform,
+            LLMRole.ORCHESTRATE: self.model_orchestrate,
         }[role]
 
     @model_validator(mode="after")

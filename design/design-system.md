@@ -271,11 +271,38 @@ centred and still read left-heavy, with a void in the bottom-right of the plaque
 beneath stays at the standard engraved-label size so it is **narrower than the plaque it captions**;
 a step larger and it runs wider, which reads as a heading rather than a footnote.
 
-The in-progress state takes the **same footprint** as the cartouche, so the threshold does not jump
-when an upload starts. The error state is the one element allowed past the open field — an error
-must be shown wherever it happens — so it brings its own opaque `--leaf` ground rather than relying
-on the field being light. A card with its own ground is the allowed way to do that; bare text over
-the engraving is never.
+The error state is the one element allowed past the open field — an error must be shown wherever it
+happens — so it brings its own opaque `--leaf` ground rather than relying on the field being light.
+A card with its own ground is the allowed way to do that; bare text over the engraving is never.
+
+**The fork.** The file is sent the moment it is dropped, and while those bytes are in flight the
+threshold offers the two routes through the product: **Guided** (you drive — parse, review, edit,
+export, one screen each) and **Conversational** (an assistant drives, and you tell it what to do).
+The pick decides what happens when the `202` lands, not whether the upload happens.
+
+Two cartouches side by side, in the language of the one they replace: open double rule, square
+corners, set type, no icon, no fill. Not two filled buttons — a filled control is a foreign object
+on an engraving, which is the whole reason the drop target is a cartouche — and not a toggle, since
+these are two named places to go rather than one setting. Under the pair, one engraved-label line
+naming the difference; under that, the upload as a hairline that fills with its stage in words.
+Below 900px they stack, where the frontispiece is already a foot band.
+
+**The budget was re-measured for it, in a browser.** This block is 140px, which makes it the
+tallest state the threshold has — taller than the 105px cartouche-and-caption it replaces — so it
+is now the state that governs the 50% cliff:
+
+| viewport | cliff | block ends at | spare |
+|---|---|---|---|
+| 1024×640 | 320 | 314 | 6 |
+| 1280×720 | 360 | 342 | 18 |
+| 1366×768 | 384 | 360 | 24 |
+| 1440×900 | 450 | 417 | 33 |
+| 1920×1080 | 540 | 485 | 55 |
+
+Six pixels at 1024×640 is the real margin, which is why the two gaps inside the block sit at the
+tight end of the spacing scale instead of stepping up with viewport height as the title page above
+them does. **Add a line here and re-measure.** The route caption goes first — the cartouches' own
+second lines already name the difference — and crushing the spacing is the wrong trade.
 
 **Parse inspector (Pl. I).** Two columns inside the content column: document structure left,
 references right. A count strip across the top: `38 resolved · 4 parsed, not found · 2 could not
@@ -297,6 +324,62 @@ own card with three explicit buttons: keep here / move to… / remove.
 **Export (Pl. IV).** The last plate of the suite, closing the arc the frontispiece opened. A
 plate-impression animation, then the `.tex` download. State the scope cut plainly: figures, tables
 and equations are placeholders.
+
+**Conversation.** The second path: one screen where an assistant does the work and narrates it. It
+is the easiest screen in the product to get visually wrong, because every chat UI reference in
+existence is built from rounded bubbles, avatars, drop shadows and frosted glass, and all four are
+forbidden here.
+
+*A printed dialogue, not a messaging app.* Turns are told apart **typographically**. User turns are
+`--font-ui` at 14px, indented behind a 2px `--ink-cobalt` rule down the left edge. Agent turns are
+`--font-body` at reading size, full measure, no rule and no container — the agent's prose is the
+body text of the page. No avatars. No timestamps on every message. No right alignment: this is a
+record of a conversation about a manuscript and it reads top to bottom in one column. A hairline
+with a centred fleuron separates a speaker change, and only a speaker change; a divider between
+every message is a table of contents for a conversation. The transcript caps at 860px, the measure
+`ReviewFeed` uses, flush left with the heading.
+
+*The composer is opaque.* It is pinned to the bottom with a hairline to sit on, and it carries no
+`backdrop-blur` and no translucency at any opacity — §4's rule, and this is the screen with the
+most text running under the most sticky chrome. Above it, one engraved-label line derived from live
+state ("The bibliography is still reconciling") and otherwise nothing. Empty ivory is the intended
+state; suggestion chips are the screen telling the user what to want. Sending disables the textarea
+and raises **Stop**, and focus is *handed over* to Stop rather than merely "returned to the
+composer" — a disabled element cannot hold focus, and a keyboard user stranded on `<body>` with a
+six-minute turn running is the trap the control exists to prevent.
+
+*Tool calls are sealed lines.* Each is one line inside the agent's turn: a `<Seal>` for state, the
+registry's own `label` in engraved caps, the tool's `summary`. In flight is `half` in cobalt,
+succeeded is `filled` in verdigris, failed is `broken` in madder **with the reason shown in full**.
+Seal *and* text label, never ink alone. Arguments collapse behind a disclosure. Forty of these
+cannot each be a panel, which is the point of the single line.
+
+*The card suite is reused, not rebuilt.* A finding in the conversation is the same `<FindingCard>`
+the review feed shows; a proposed change is the same `<ChangeCard>` with the same `<DiffText>` and
+`<AnchorSeals>`; the tier counts get `<CountStrip>` with Bodoni numerals at headline size in the
+chat exactly as on Pl. I, because they are the honesty guarantee and demoting them to a sentence
+would be the one place this flow quietly promised less than the guided one. Where a card took
+screen-level props they were lifted (`ChangeCard` gained `readOnly`, `DocumentStructure` takes
+`sections`); a second card that drifts from the first is a worse outcome than an awkward prop. Long
+results collapse to three and a disclosure.
+
+*Progress is a hairline that fills*, `h-px bg-cobalt`, with the phase stated in words beside it —
+never a rounded track, never a spinner, never a bar animated to fill a silence. It is pinned above
+the composer while running and settles into the transcript at the point it completed, because a
+finished run is part of the record of what happened.
+
+*The plate follows the work.* Pl. I while parsing, II while reviewing, III on a pending edit, IV on
+a pending export. The four plates are the four stages and this screen does all four in turn, so
+pinning it to one numeral would put the parse engraving beside a running review.
+
+*Confirmation is a message, never a request.* Yes and No post canonical text into the conversation;
+neither calls an endpoint. Orphaned anchors each get their own `<OrphanedAnchorCard>` with the three
+explicit choices, and Yes stays disabled until every one has a decision — HR-5, stated on this
+screen as well as in the runtime, deliberately twice.
+
+*Motion* is the same 180–240ms `ease-ink`: messages fade and rise 8px, nothing slides or bounces.
+No typing dots — a `<Seal kind="half">` beside the word "Thinking" says it in this typeface — and
+no per-character animation on top of a stream that is already progressive.
 
 ---
 

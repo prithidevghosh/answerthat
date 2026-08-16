@@ -19,6 +19,7 @@ GROBID and the UI fails loudly instead of shipping as a shorter bibliography.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -38,6 +39,8 @@ from app.parsing.repair import ReferenceSegmenter, RepairOutcome, repair_referen
 from app.parsing.segmenter import build_default_segmenter
 from app.parsing.style import StyleDetectionResult, detect_style, scoring_fingerprint
 from app.parsing.tei import parse_tei, tei_to_ir
+
+log = logging.getLogger("app.parsing.pipeline")
 
 __all__ = [
     "IngestResult",
@@ -135,14 +138,24 @@ async def ingest_tei(
     styles_dir: Path | None = None,
     detect_citation_style: bool = True,
     on_stage: Callable[[str], None] | None = None,
+    on_document: Callable[[Document], None] | None = None,
 ) -> IngestResult:
-    """Everything downstream of GROBID. Separated so it is testable without a sidecar."""
+    """Everything downstream of GROBID. Separated so it is testable without a sidecar.
+
+    `on_document` is invoked the moment the IR exists, before references, repair,
+    arbitration and style — the four stages that take the minutes. It exists so a reader
+    can ask about the paper's text while its bibliography is still being reconciled
+    (ADR-033). What it publishes is a *draft*: the sections and spans are final, the
+    citation anchors have no `source_id`s yet, and every consumer says so.
+    """
 
     def _stage(name: str) -> None:
         if on_stage is not None:
             on_stage(name)
 
     parsed = tei_to_ir(tei_xml, doc_id=doc_id)
+    if on_document is not None:
+        on_document(parsed.document)
     _stage("references")
     references = references_from_tei(parse_tei(tei_xml), threshold=repair_threshold)
 
@@ -273,6 +286,7 @@ class IngestPipeline:
         arbiter: Arbiter | None = None,
         segmenter: ReferenceSegmenter | None = None,
         store_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+        report_store_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
         allow_unreconciled: bool = False,
         allow_unpersisted: bool = False,
     ) -> None:
@@ -299,6 +313,12 @@ class IngestPipeline:
         self._arbiter = arbiter
         self._segmenter = segmenter
         self._store_factory = store_factory
+        # Optional, unlike `store_factory`. Its absence costs a *restart* the parse report
+        # rather than costing this ingest anything, and the failure is already visible:
+        # `parse_report` says the report is not held any more and names the restart. A
+        # constructor that refused without it would make the in-memory pipeline every test
+        # uses unbuildable for a durability property those tests do not exercise.
+        self._report_store_factory = report_store_factory
         self._registry = registry()
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -326,23 +346,77 @@ class IngestPipeline:
     def record_failure(self, doc_id: str, message: str) -> None:
         self._registry.fail(doc_id, message)
 
-    def parse_report(self, doc_id: str) -> dict[str, Any]:
+    def draft_document(self, doc_id: str) -> Document | None:
+        """The IR as `tei_to_ir` built it, before reconciliation. ADR-033.
+
+        `None` until the ingest reaches that stage, which is the honest answer while
+        GROBID is still running: nothing about the paper is readable yet except its
+        filename.
+        """
+        return self._registry.draft(doc_id)
+
+    async def parse_report(self, doc_id: str, version: int | None = None) -> dict[str, Any]:
         """References, orphan markers and tier counts for the parse inspector.
 
         Raises if the ingest is not finished. Returning an empty report for a running
         job would render as "this paper has no references".
+
+        The in-process registry is asked first and the `parse_reports` table second
+        (ADR-032). That order is deliberate: the registry holds the live `IngestResult`,
+        so a document being re-ingested right now reports what is actually happening to
+        it rather than what the last completed run concluded. The table answers for every
+        document ingested before the current process started — which used to be a 404 on
+        a paper the user had watched finish parsing.
         """
         record = self._registry.get(doc_id)
-        if record is None:
-            raise ParseFailure(f"no ingest is known for document {doc_id!r}")
-        if record.state == "failed":
+        if record is not None and record.state == "failed":
             raise ParseFailure(f"ingest failed for {doc_id!r}: {record.error}")
-        if record.result is None:
+        if record is not None and record.result is not None:
+            return build_parse_report(record.result)
+
+        stored = await self._load_report(doc_id, version)
+        if stored is not None:
+            return stored
+
+        if record is None:
             raise ParseFailure(
-                f"ingest for {doc_id!r} is still {record.state} at stage {record.stage!r}; "
-                "poll status until it is complete"
+                f"no ingest is known for document {doc_id!r}, and no parse report is stored "
+                "for it. If it was uploaded before this process started and the ingest never "
+                "finished, it has to be re-uploaded — the in-flight work did not survive."
             )
-        return build_parse_report(record.result)
+        raise ParseFailure(
+            f"ingest for {doc_id!r} is still {record.state} at stage {record.stage!r}; "
+            "poll status until it is complete"
+        )
+
+    async def _load_report(self, doc_id: str, version: int | None) -> dict[str, Any] | None:
+        if self._report_store_factory is None:
+            return None
+        async with self._report_store_factory() as store:
+            return await store.get(doc_id, version)
+
+    async def _persist_report(self, doc_id: str, version: int, result: IngestResult) -> None:
+        """Write the report beside the document version it describes.
+
+        A failure here is logged and does not fail the ingest. The paper *is* parsed and
+        persisted at this point; refusing to complete because a derived cache could not be
+        written would turn a durability regression into a lost parse. The consequence is
+        bounded and already surfaced: the report is served from the registry until this
+        process restarts, and `parse_report` then says so.
+        """
+        if self._report_store_factory is None:
+            return
+        try:
+            report = build_parse_report(result)
+            async with self._report_store_factory() as store:
+                await store.put(doc_id, version, report)
+        except Exception:  # noqa: BLE001 — logged with its traceback, never silent
+            log.exception(
+                "could not persist the parse report for %s v%d; it will be served from the "
+                "in-process registry until this API restarts",
+                doc_id,
+                version,
+            )
 
     # -- internals ---------------------------------------------------------
 
@@ -361,11 +435,13 @@ class IngestPipeline:
                 arbiter=self._arbiter,
                 styles_dir=self._styles_dir,
                 on_stage=lambda stage: self._registry.advance(doc_id, stage),
+                on_document=lambda document: self._registry.publish_draft(doc_id, document),
             )
 
             self._registry.advance(doc_id, "persist")
             version = await self._persist(result.document)
             self._registry.complete(doc_id, result, version)
+            await self._persist_report(doc_id, version, result)
         except Exception as exc:  # noqa: BLE001 - recorded on the job, then visible via status()
             # Not swallowed: the job goes to `failed` with the reason attached, which is
             # what /parse-status reports and what the UI shows the user (HR-3).
@@ -529,6 +605,7 @@ def get_ingest_pipeline(
     arbiter: Arbiter | None = None,
     segmenter: ReferenceSegmenter | None = None,
     store_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+    report_store_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
     allow_unreconciled: bool = False,
     allow_unrepaired: bool = False,
     allow_unpersisted: bool = False,
@@ -560,6 +637,7 @@ def get_ingest_pipeline(
             arbiter=arbiter,
             segmenter=segmenter,
             store_factory=store_factory,
+            report_store_factory=report_store_factory,
             allow_unreconciled=allow_unreconciled,
             allow_unpersisted=allow_unpersisted,
         )

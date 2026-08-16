@@ -104,7 +104,7 @@ export function ParseInspector({
             Document structure
           </h2>
           <div className="mt-6">
-            <DocumentStructure document={result.document} />
+            <DocumentStructure sections={result.document.sections} />
           </div>
         </aside>
 

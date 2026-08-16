@@ -1,8 +1,12 @@
 import type {
   ApiStatus,
   ApprovalPayload,
+  ChatEvent,
+  ChatHandle,
   CommandResult,
   CommitResult,
+  Conversation,
+  ConversationLog,
   ExportManifest,
   ParseResult,
   ParseStatus,
@@ -24,8 +28,28 @@ export interface ApiClient {
   /** HR-2 probe. Distinguishes "misconfigured" from "not running". */
   getStatus(): Promise<ApiStatus>;
 
+  /**
+   * Send the PDF. Resolves on the **202**, before GROBID has run.
+   *
+   * This used to be one call that also waited for the parse, and the two halves
+   * are split rather than weakened because the two flows need opposite things
+   * from them: the guided path must not navigate until `/parse` will answer,
+   * and the conversational path must navigate immediately, because narrating
+   * the parse is the agent's first job. Read the docstring above `waitForParse`
+   * in live-client.ts before recombining them.
+   *
+   * `uploadPdf(...).then(a => waitForParse(a.doc_id, ...))` is the old
+   * behaviour, byte for byte.
+   */
   uploadPdf(
     file: File,
+    onProgress: (p: UploadProgress) => void,
+    signal?: AbortSignal,
+  ): Promise<UploadAccepted>;
+
+  /** The poll loop that used to be the second half of `uploadPdf`. */
+  waitForParse(
+    docId: string,
     onProgress: (p: UploadProgress) => void,
     signal?: AbortSignal,
   ): Promise<UploadAccepted>;
@@ -77,6 +101,42 @@ export interface ApiClient {
   getExportManifest(docId: string): Promise<ExportManifest>;
   /** Absolute URL so the browser downloads straight from the API. */
   exportUrl(docId: string): string;
+
+  // ---------- the conversational flow ----------
+  //
+  // These are on the interface, not bolted onto the live client, and they are
+  // not optional. An optional method would typecheck against a fixture client
+  // that never implemented it and then fail in the browser the moment
+  // NEXT_PUBLIC_USE_FIXTURES=1 — a runtime break where the seam exists
+  // precisely to give a compile-time one.
+
+  /** Create or return this document's conversation. Idempotent per document. */
+  startConversation(docId: string): Promise<Conversation>;
+
+  /**
+   * The persisted message log, for a cold page load.
+   *
+   * The stream also replays its event log, so a caller loads this first and then
+   * reconciles the replay by `message_id`. Appending blindly doubles the
+   * transcript on every refresh.
+   */
+  getConversation(conversationId: string): Promise<ConversationLog>;
+
+  /** 202. The turn runs in the background and arrives on the stream. */
+  sendMessage(conversationId: string, text: string): Promise<{ accepted: true }>;
+
+  /**
+   * Direct EventSource to FastAPI — never proxied through a Next route.
+   *
+   * Takes the whole `Conversation` for the same reason `subscribeReview` takes
+   * the whole `ReviewStarted`: the stream URL is the API's to name and the
+   * client's job is to follow it. Composing one is how `/api/reviews/{job_id}/stream`,
+   * a route no router has ever served, shipped.
+   */
+  subscribeChat(conv: Conversation, onEvent: (e: ChatEvent) => void): ChatHandle;
+
+  /** Cancel the in-flight turn. The conversation stays usable afterwards. */
+  stopTurn(conversationId: string): Promise<void>;
 }
 
 const stripTrailingSlash = (u: string) => u.replace(/\/$/, '');

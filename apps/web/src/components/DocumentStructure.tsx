@@ -1,4 +1,4 @@
-import type { DocumentIR, Block } from '@/lib/contracts';
+import type { Block, Section } from '@/lib/contracts';
 
 const PLACEHOLDER_TYPES: Block['type'][] = ['figure', 'table', 'equation'];
 
@@ -15,11 +15,18 @@ const PLACEHOLDER_LABEL: Record<string, string> = {
  * Placeholder blocks (figures, tables, equations) are shown as placeholders
  * here, not hidden — ADR-008 is a stated scope cut, and the user meets it at
  * parse time rather than discovering it in the export.
+ *
+ * Takes `sections`, not the whole IR, because the conversational flow renders
+ * the same outline from `get_document_outline` — which can serve the *draft*
+ * document published at `tei_to_ir`, before there is a version or a
+ * bibliography to build a `DocumentIR` around. It only ever read `.sections`
+ * anyway. A second copy of this component that drifted from this one would be a
+ * worse outcome than a slightly awkward prop.
  */
-export function DocumentStructure({ document }: { document: DocumentIR }) {
+export function DocumentStructure({ sections }: { sections: Section[] }) {
   return (
     <nav aria-label="Document structure" className="space-y-8">
-      {document.sections.map((section) => {
+      {sections.map((section) => {
         const paragraphs = section.blocks.filter((b) => b.type === 'paragraph');
         const placeholders = section.blocks.filter((b) => PLACEHOLDER_TYPES.includes(b.type));
         const anchors = paragraphs.reduce(

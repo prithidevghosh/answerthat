@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:  # `pipeline` imports this module, so the type is a forward reference.
+    from app.core.contracts import Document
     from app.parsing.pipeline import IngestResult
 
 __all__ = ["JobState", "IngestRecord", "IngestRegistry", "STAGES"]
@@ -51,6 +52,16 @@ class IngestRecord:
     version: int | None = None
     error: str = ""
     result: IngestResult | None = None
+    draft_document: Document | None = None
+    """The IR as it existed straight out of `tei_to_ir`: sections, blocks, spans, title —
+    everything except a reconciled bibliography. Published minutes before the ingest
+    finishes so a reader can be answered about the paper's *text* while its references are
+    still being repaired and arbitrated (ADR-033).
+
+    It is never a substitute for `result`. Anything served from here is marked
+    `is_draft: true` all the way to the user, because the difference between "this is the
+    text as extracted" and "this is the reconciled document" is exactly the kind of thing
+    HR-3 says must be visible rather than inferred."""
     started_at: float = field(default_factory=time.monotonic)
     finished_at: float | None = None
 
@@ -96,6 +107,23 @@ class IngestRegistry:
             return
         record.state = "running"
         record.stage = stage
+
+    def publish_draft(self, doc_id: str, document: Document) -> None:
+        """Record the IR as soon as `tei_to_ir` has built it."""
+        record = self._by_doc.get(doc_id)
+        if record is None:
+            return
+        record.draft_document = document
+
+    def draft(self, doc_id: str) -> Document | None:
+        """The draft IR, or None when the ingest has not reached `tei_to_ir` yet.
+
+        None means "nothing about this paper is readable except its filename", which is
+        the honest answer at stages `queued` and `grobid`. Callers say exactly that rather
+        than fabricating an intermediate.
+        """
+        record = self._by_doc.get(doc_id)
+        return record.draft_document if record else None
 
     def complete(self, doc_id: str, result: IngestResult, version: int) -> None:
         record = self._by_doc.get(doc_id)
