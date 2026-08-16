@@ -73,7 +73,8 @@ log = logging.getLogger("app.providers.source_store")
 PROVIDER_PACKAGE = "app.providers"
 
 # Absent values, for the append-only enrichment rule. An abstract going from "we have not
-# found one" to a real string is enrichment; anything else is a mutation.
+# found one" to a real string is enrichment and is taken; a real one arriving on top of a
+# real one is a second reading, recorded beside the first rather than over it.
 _ABSENT_ABSTRACT_SOURCES = {AbstractSource.UNAVAILABLE}
 
 
@@ -243,8 +244,8 @@ def _merge_append_only(existing: SourceRecord, incoming: SourceRecord) -> MergeR
     if violations:
         raise AppendOnlyViolation(
             f"source_id {existing.source_id!r} is already stored and this write would "
-            "change identity or provenance-bearing values, which the append-only store "
-            "does not permit: " + "; ".join(violations)
+            "change an identity value, which the append-only store does not permit: "
+            + "; ".join(violations)
         )
 
     disagreements = [

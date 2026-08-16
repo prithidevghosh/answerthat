@@ -710,9 +710,10 @@ fuller title, they differ on publication year by one, and each returns its own c
 
 **Decision.** Differing values are no longer uniformly fatal. Three classes, handled differently:
 
-* **Identity and provenance** — `DOI`, and an abstract that is already stored from a real response.
-  A change here is still `AppendOnlyViolation`, still fatal, still uncatchable. This is the part of
-  HR-1 that makes fabrication structurally impossible and it is untouched.
+* **Identity** — `DOI`. A change here is still `AppendOnlyViolation`, still fatal, still
+  uncatchable. This is the part of HR-1 that makes fabrication structurally impossible and it is
+  untouched. An abstract already stored from a real response is still never *replaced* — see the
+  amendment below, which keeps that guarantee and drops only the raise.
 * **Provider-specific and mutable fields** — `citation_count`, `crossref_score`, `is_open_access`,
   `raw_author_names`. Namespaced under `custom.providers.<name>` and never compared. A citation
   count is a measurement that changes between two reads of the same record; storing it as a value
@@ -732,10 +733,34 @@ substring-checked against it, and silently promoting a "better" title would move
 verifier already stood on. Choosing between readings stays with the arbiter, which has the
 agreement score to do it with; the store's job is to lose nothing.
 
+**Amendment — a rival abstract is a disagreement too.** The original decision left a differing
+abstract in the fatal class, and that class had one member ADR-006 puts there by design. The chain
+is S2 → OpenAlex inverted → S2 TLDR: when S2 has no licensed abstract it stores its TLDR and the
+chain *carries on* to OpenAlex, which ranks higher. So the normal path wrote a second, better
+abstract onto a `source_id` that already held one, and raised — uncatchably, in the `review` state,
+for every reference where S2 was unlicensed and OpenAlex had an inverted index. The store was
+vetoing the chain it was built to serve, which is the same mistake ADR-028 was written to correct,
+one field later.
+
+An abstract now behaves like a descriptive field: **the stored one stays canonical and the rival is
+recorded beside it** with its own source and provenance. The guarantee the fatal class existed for
+is intact — a stored abstract is still never replaced, so a quote already substring-checked against
+it still holds. What changed is only that the alternative is kept instead of refused. `AbstractResolver`
+stays the thing that ranks, and it ranks live on every `resolve()`, so the verifier reads OpenAlex's
+fuller abstract regardless of which one the store calls canonical. The store does not get a second
+vote; that was the whole argument above.
+
+Note the blind spot that let this reach production: every test of the chain stubbed *both*
+providers, so no test had ever put two real abstracts into one store.
+
 **Consequences.** Records now reach version 2+, which is what the composite key was always for.
 A reference where providers disagree no longer fails the paper. The disagreements are retained and
 are the obvious raw material for showing a reviewer *why* two sources describe one work
 differently, which we do not do yet.
+
+`prefilter` and `rerank` read `record.abstract` directly, so for a TLDR-first record they see the
+one-liner rather than OpenAlex's fuller text — a ranking-quality cost, not an honesty one, and the
+same trade-off ADR-005 already accepts. Routing them through the resolver is the fix if it matters.
 
 `source_store` gains a `disagreements` column. A fresh database gets it from `create_all()`; an
 existing one took a single additive `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, applied by hand

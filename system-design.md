@@ -199,6 +199,28 @@ response already put there. Fabrication is excluded by the type system, not by a
 Versioning is copy-on-write per approved change set, so every edit is revertible and the diff view
 is a structural comparison, not a text diff.
 
+**What "append-only" refuses, and what it keeps** (ADR-028). Only the DOI is identity; changing it
+raises `AppendOnlyViolation` and kills the write. Everything else a second provider offers for the
+same `source_id` is kept: descriptive differences (title, type, year, URL) are recorded as
+`disagreements` alongside the stored value at version *n+1*, and mutable per-provider numbers
+(citation count, OA flag, Crossref score) sit under `custom.providers.<name>` and are never compared
+at all — a citation count is a measurement, not a fact that may never change.
+
+Abstracts are in the descriptive class, not the identity class. The stored abstract stays canonical,
+because a quote has very likely already been substring-checked against it and promoting a later
+reading would move ground the verifier stood on. But a rival *real* abstract is recorded beside it
+rather than refused. The reason is concrete: ADR-006's chain is S2 → OpenAlex inverted → S2 TLDR, so
+an unlicensed S2 abstract stores a TLDR and the chain carries on to OpenAlex — two real abstracts
+for one work is the normal path, and treating the second as corruption made that path fatal.
+
+The choice underneath both: **the store's job is to lose nothing, not to arbitrate.** Ranking already
+happens live in `AbstractResolver` on every `resolve()`, and the arbiter holds the agreement score.
+A store-side veto is a second vote, cast at write time with strictly less information.
+
+Cost we accept: `prefilter` and `rerank` read `record.abstract` directly, so a TLDR-first record is
+ranked on the one-liner rather than OpenAlex's fuller text. Ranking quality, not honesty; routing
+them through the resolver is the fix if it starts to matter.
+
 ---
 
 ## 4. Peer review
