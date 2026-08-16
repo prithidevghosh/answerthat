@@ -47,10 +47,28 @@ export interface ParseResult {
   references: ParsedReference[];
   orphan_markers: OrphanMarker[];
   counts: TierCounts;
-  style: StyleDetection;
+  /** Null when the style service is not bound — `/parse` composes this from B1's
+   *  detector and returns null rather than omitting the key. Declaring it non-nullable
+   *  is what turned that into a client-side crash on the orphan-marker path. */
+  style: StyleDetection | null;
 }
 
 export type UploadStage = 'uploading' | 'extracting' | 'parsing' | 'resolving' | 'complete';
+
+/**
+ * `GET /documents/{docId}/parse-status`.
+ *
+ * The parse inspector needs this as well as the upload screen: a paper can be
+ * opened by URL while its ingest is still running, and "not finished yet" has to
+ * be distinguishable from "failed" and from "does not exist".
+ */
+export interface ParseStatus {
+  state: 'queued' | 'running' | 'complete' | 'failed';
+  stage: string | null;
+  progress: number | null;
+  version: number | null;
+  error: string | null;
+}
 
 export interface UploadAccepted {
   doc_id: string;

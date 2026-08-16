@@ -419,14 +419,21 @@ export const REFERENCES: ParsedReference[] = [
   ...quarantined,
 ];
 
+const ORPHAN_SNIPPET =
+  'Earlier work on block-sparse routing [48] reported comparable throughput, though under a different memory budget.';
+
 export const ORPHAN_MARKERS: OrphanMarker[] = [
   {
-    ref_id: 'orphan-1',
+    // Keyed by anchor_id, not ref_id: an orphan marker is defined by having no reference.
+    anchor_id: 'a-orphan-1',
     marker_text: '[48]',
-    section_title: '5. Discussion',
     span_id: 'sp-5-2',
-    snippet:
-      'Earlier work on block-sparse routing [48] reported comparable throughput, though under a different memory budget.',
+    section_id: 'sec-5',
+    section_title: '5. Discussion',
+    target: null,
+    reason: "target 'b47' not in listBibl",
+    page: 8,
+    snippet: ORPHAN_SNIPPET,
   },
 ];
 
@@ -468,7 +475,7 @@ export const DOCUMENT: DocumentIR = {
   quarantine: [
     { raw: quarantined[0].raw_string, reason: 'parse_failed', page: 11 },
     { raw: quarantined[1].raw_string, reason: 'parse_failed', page: 11 },
-    { raw: ORPHAN_MARKERS[0].snippet, reason: 'orphan_marker', page: 8 },
+    { raw: ORPHAN_SNIPPET, reason: 'orphan_marker', page: 8 },
   ],
   sections: [
     {
@@ -617,7 +624,7 @@ export const DOCUMENT: DocumentIR = {
               'Retrieval-augmented pipelines benefit most, since the retrieved context dominates the sequence budget.',
               [['a-4', ['s2:9f8a1c2b7e4d6a0b3c5e8f1a2d4b6c8e0f2a4b6c'], 96]],
             ),
-            span('sp-5-2', ORPHAN_MARKERS[0].snippet),
+            span('sp-5-2', ORPHAN_SNIPPET),
           ],
         },
       ],

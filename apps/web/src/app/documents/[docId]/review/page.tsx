@@ -48,7 +48,7 @@ export default async function ReviewPage({ params }: { params: Promise<{ docId: 
         title={parse.document.metadata.title}
         version={parse.document.version}
       />
-      <ReviewFeed docId={docId} styleId={parse.style.style_id ?? 'ieee'} />
+      <ReviewFeed docId={docId} styleId={parse.style?.style_id ?? 'ieee'} />
     </>
   );
 }

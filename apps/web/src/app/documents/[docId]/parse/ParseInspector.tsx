@@ -23,7 +23,7 @@ export function ParseInspector({
   sources: Record<string, SourceRecord>;
 }) {
   const [filter, setFilter] = useState<ConfidenceTier | 'all'>('all');
-  const [styleId, setStyleId] = useState(result.style.style_id ?? 'ieee');
+  const [styleId, setStyleId] = useState(result.style?.style_id ?? 'ieee');
 
   // One citeproc pass over the whole bibliography, always in document order, so
   // numeric styles number correctly and author-date styles disambiguate. Cards
@@ -75,9 +75,14 @@ export function ParseInspector({
         <CountStrip counts={result.counts} active={filter} onSelect={setFilter} />
       </div>
 
-      <div className="mt-8">
-        <StyleBanner docId={docId} style={result.style} onChosen={setStyleId} />
-      </div>
+      {/* No banner when the detector is unbound. The references still render in the
+          fallback style — silently, because claiming a detected style we never
+          detected would be worse than showing none. */}
+      {result.style && (
+        <div className="mt-8">
+          <StyleBanner docId={docId} style={result.style} onChosen={setStyleId} />
+        </div>
+      )}
 
       <RuleWithFleuron className="my-16" />
 
@@ -113,7 +118,9 @@ export function ParseInspector({
 
           <ul className="mt-8 space-y-6">
             {showOrphans &&
-              result.orphan_markers.map((m) => <OrphanMarkerCard key={m.ref_id} marker={m} />)}
+              result.orphan_markers.map((m) => (
+                <OrphanMarkerCard key={m.anchor_id} marker={m} />
+              ))}
 
             {ordered.map((ref) => (
               <ReferenceCard

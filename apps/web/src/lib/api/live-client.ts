@@ -5,6 +5,7 @@ import type {
   CommandResult,
   ExportManifest,
   ParseResult,
+  ParseStatus,
   ReviewEvent,
   ReviewHandle,
   UploadAccepted,
@@ -83,12 +84,42 @@ async function getStatus(): Promise<ApiStatus> {
   }
 }
 
+/** POST /documents returns 202 with a job id, not a parsed paper. */
+interface UploadAcceptedResponse {
+  job_id: string;
+  doc_id: string;
+  poll: string;
+}
+
+const parseStatus = (docId: string) =>
+  json<ParseStatus>(`/documents/${docId}/parse-status`, { cache: 'no-store' });
+
+/**
+ * B1's pipeline stages → the four this UI speaks. The backend's vocabulary is
+ * ordered and longer (`queued`, `grobid`, `tei_to_ir`, `references`, `repair`,
+ * `arbiter`, `style`, `persist`, `complete`); the mapping is here rather than in
+ * the component so the component keeps one small set of names to render.
+ */
+const STAGE_FROM_BACKEND: Record<string, UploadProgress['stage']> = {
+  queued: 'extracting',
+  grobid: 'extracting',
+  tei_to_ir: 'extracting',
+  references: 'parsing',
+  repair: 'parsing',
+  arbiter: 'resolving',
+  style: 'resolving',
+  persist: 'resolving',
+  complete: 'complete',
+};
+
+const POLL_INTERVAL_MS = 1500;
+
 /** XHR, not fetch: upload progress is the one thing fetch still cannot report. */
-function uploadPdf(
+function postPdf(
   file: File,
   onProgress: (p: UploadProgress) => void,
   signal?: AbortSignal,
-): Promise<UploadAccepted> {
+): Promise<UploadAcceptedResponse> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append('file', file);
@@ -111,8 +142,7 @@ function uploadPdf(
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress({ stage: 'complete', fraction: 1, detail: 'Ready' });
-        resolve(xhr.response as UploadAccepted);
+        resolve(xhr.response as UploadAcceptedResponse);
       } else {
         reject(new ApiError('Upload failed', xhr.status, xhr.response));
       }
@@ -125,11 +155,82 @@ function uploadPdf(
   });
 }
 
+/**
+ * Upload the PDF, then **wait for the parse it started**.
+ *
+ * `POST /documents` answers 202 with a job id: the paper is accepted, and GROBID
+ * plus per-reference arbitration have not run yet. This used to report
+ * `stage: 'complete'` on that 202 and resolve, so the caller navigated to the
+ * parse inspector within milliseconds and `GET /documents/{id}/parse` 404'd on a
+ * document that did not exist yet — "Could not load parse results", every time,
+ * on a paper that was parsing perfectly well and finished a few minutes later.
+ *
+ * The 202 carries `poll` for exactly this reason, and `parse-status` is the
+ * endpoint it names. `resolving` and `parsing` were already in `UploadStage` and
+ * nothing had ever emitted them; they light up here.
+ *
+ * A `failed` parse rejects with the backend's own reason. It never resolves as
+ * though a paper were ready (HR-3) — that would send the user to an inspector
+ * showing nothing, which reads as a paper with no references rather than as a
+ * parse that failed.
+ */
+async function uploadPdf(
+  file: File,
+  onProgress: (p: UploadProgress) => void,
+  signal?: AbortSignal,
+): Promise<UploadAccepted> {
+  const accepted = await postPdf(file, onProgress, signal);
+
+  for (;;) {
+    if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+
+    const status = await parseStatus(accepted.doc_id);
+
+    if (status.state === 'failed') {
+      throw new ApiError(
+        status.error ?? 'The parse failed and the API gave no reason.',
+        502,
+        status,
+      );
+    }
+
+    if (status.state === 'complete') {
+      onProgress({ stage: 'complete', fraction: 1, detail: 'Ready' });
+      // The version the store assigned, not one we assumed. `parse-status` only
+      // carries it once the IR is written, which is the same moment `/parse`
+      // starts answering.
+      return { doc_id: accepted.doc_id, version: status.version ?? 1 };
+    }
+
+    onProgress({
+      stage: STAGE_FROM_BACKEND[status.stage ?? 'queued'] ?? 'extracting',
+      // The backend derives this from the stage's position in its own ordered
+      // list, so it is a real fraction of the pipeline rather than a timer.
+      fraction: status.progress,
+      detail: file.name,
+    });
+
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
+}
+
 export const liveClient: ApiClient = {
   getStatus,
   uploadPdf,
 
   getParseResult: (docId) => json<ParseResult>(`/documents/${docId}/parse`),
+
+  async getParseStatus(docId) {
+    try {
+      return await parseStatus(docId);
+    } catch (err) {
+      // 404 means the API knows of no ingest for this document — a real answer,
+      // and the caller's cue to stop waiting for one. Any other failure is not
+      // ours to interpret as "no job".
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
 
   chooseStyle: (docId, styleId) =>
     json<void>(`/documents/${docId}/style`, {

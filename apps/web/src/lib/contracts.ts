@@ -133,12 +133,26 @@ export interface ParsedReference {
 }
 
 /** An in-text marker whose target reference does not exist (tier orphan_marker). */
+/**
+ * An in-text marker whose bibliography entry does not exist.
+ *
+ * There is no `ref_id` here on purpose: an orphan marker is defined by having no
+ * reference, so `anchor_id` is its identity. This type used to declare `ref_id` and a
+ * non-optional `snippet`, and the backend sent neither — `snippet.split()` then threw
+ * and took the whole inspector down on the first paper that actually had one.
+ */
 export interface OrphanMarker {
-  ref_id: string;
+  anchor_id: string;
   marker_text: string;
-  section_title: string;
   span_id: string;
-  snippet: string;
+  section_id: string;
+  target: string | null;
+  reason: string;
+  page: number | null;
+  /** The sentence the marker sits in, resolved from the IR. Null when it could not
+   *  be located — stated rather than substituted. */
+  snippet: string | null;
+  section_title: string | null;
 }
 
 // ---------- review ----------

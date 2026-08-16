@@ -4,6 +4,7 @@ import type {
   CommandResult,
   ExportManifest,
   ParseResult,
+  ParseStatus,
   ReviewEvent,
   ReviewHandle,
   UploadAccepted,
@@ -28,6 +29,8 @@ export interface ApiClient {
   ): Promise<UploadAccepted>;
 
   getParseResult(docId: string): Promise<ParseResult>;
+  /** Where an ingest has got to. `null` when the API knows of no such job. */
+  getParseStatus(docId: string): Promise<ParseStatus | null>;
   chooseStyle(docId: string, styleId: string): Promise<void>;
 
   getSource(sourceId: string): Promise<SourceRecord>;

@@ -39,6 +39,19 @@ export const fixtureClient: ApiClient = {
     return F.PARSE_RESULT;
   },
 
+  async getParseStatus() {
+    await wait(60);
+    // A fixture document is always already parsed — `uploadPdf` above walks the
+    // stages and does not resolve until it has.
+    return {
+      state: 'complete' as const,
+      stage: 'complete',
+      progress: 1,
+      version: F.DOCUMENT.version,
+      error: null,
+    };
+  },
+
   async chooseStyle() {
     await wait(120);
   },
