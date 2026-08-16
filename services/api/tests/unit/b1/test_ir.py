@@ -261,3 +261,56 @@ async def test_quarantine_survives_persistence(sample_doc: Document) -> None:
     assert head is not None
     assert head.quarantine[0].raw == "Smith, J. mumble mumble 20??, pp. ??-??"
     assert head.quarantine[0].reason == "parse_failed"
+
+
+# ---------------------------------------------------------------- fingerprints (ADR-017)
+
+
+async def test_fingerprints_live_in_a_side_table_not_on_the_anchor(sample_doc: Document) -> None:
+    """ADR-017: the anchor carries an id; a diff full of 512 floats is unreadable, and
+    the approval flow depends on that diff being human-scannable."""
+    from app.core.contracts import CitationAnchor
+
+    assert "fingerprint_id" in CitationAnchor.model_fields
+    assert "context_fingerprint" not in CitationAnchor.model_fields
+    for ref in tv.iter_anchors(sample_doc):
+        assert ref.anchor.fingerprint_id is None
+
+
+async def test_fingerprint_store_round_trip() -> None:
+    from app.ir.fingerprints import Fingerprint, InMemoryFingerprintStore, new_fingerprint_id
+
+    store = InMemoryFingerprintStore()
+    fp = Fingerprint(
+        fingerprint_id=new_fingerprint_id(),
+        vector=[0.1] * 512,
+        text="The sentence this citation used to live in.",
+        model="text-embedding-3-small",
+        dimensions=512,
+    )
+    assert await store.put(fp) == fp.fingerprint_id
+    loaded = await store.get(fp.fingerprint_id)
+    assert loaded is not None and loaded.text.startswith("The sentence")
+    assert len(loaded.vector) == 512
+
+
+async def test_fingerprints_are_immutable_across_versions() -> None:
+    """An anchor's recorded context does not change because an unrelated paragraph was
+    edited, so a version pointing at a fingerprint can never have it change underneath."""
+    from app.ir.fingerprints import Fingerprint, InMemoryFingerprintStore
+
+    store = InMemoryFingerprintStore()
+    original = Fingerprint("fp_1", [1.0] * 512, "original", "text-embedding-3-small", 512)
+    await store.put(original)
+    await store.put(Fingerprint("fp_1", [9.0] * 512, "overwritten", "text-embedding-3-small", 512))
+    stored = await store.get("fp_1")
+    assert stored is not None and stored.text == "original"
+
+
+async def test_get_many_returns_only_what_exists() -> None:
+    from app.ir.fingerprints import Fingerprint, InMemoryFingerprintStore
+
+    store = InMemoryFingerprintStore()
+    await store.put(Fingerprint("fp_a", [0.0] * 4, "a", "m", 4))
+    found = await store.get_many(["fp_a", "fp_missing"])
+    assert set(found) == {"fp_a"}, "a missing fingerprint must be absent, not a zero vector"

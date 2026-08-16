@@ -154,7 +154,9 @@ class InMemoryDocumentStore(_StoreBase):
 class DocumentVersionRow(Base):
     """One row per version. Insert-only — there is no UPDATE path to this table."""
 
-    __tablename__ = "document_versions"
+    # ADR-020: B1's tables are `ir_*`. No migrations in v1, so a table created under the
+    # wrong name is not something a later revision fixes — it is a `make db-reset`.
+    __tablename__ = "ir_document_versions"
 
     doc_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     version: Mapped[int] = mapped_column(Integer, primary_key=True)

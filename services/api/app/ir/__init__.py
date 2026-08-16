@@ -8,11 +8,18 @@ IDs, and LaTeX is a render target rather than the working representation.
 """
 
 from app.ir.builder import BlockBuilder, DocumentBuilder, SectionBuilder
+from app.ir.diff import IRDiff
+from app.ir.diff import diff as diff_documents
 
 # Exported as `diff_documents` so the name does not shadow the `app.ir.diff` module
 # for anyone doing `from app.ir import diff`.
-from app.ir.diff import IRDiff
-from app.ir.diff import diff as diff_documents
+from app.ir.fingerprints import (
+    Fingerprint,
+    FingerprintStore,
+    InMemoryFingerprintStore,
+    PostgresFingerprintStore,
+    new_fingerprint_id,
+)
 from app.ir.store import (
     DocumentStore,
     InMemoryDocumentStore,
@@ -36,6 +43,8 @@ from app.ir.traversal import (
 __all__ = [
     "DocumentBuilder", "SectionBuilder", "BlockBuilder",
     "IRDiff", "diff_documents",
+    "Fingerprint", "FingerprintStore", "InMemoryFingerprintStore",
+    "PostgresFingerprintStore", "new_fingerprint_id",
     "DocumentStore", "InMemoryDocumentStore", "PostgresDocumentStore", "VersionInfo",
     "SpanRef", "AnchorRef", "IRProblem",
     "iter_blocks", "iter_spans", "iter_anchors",
