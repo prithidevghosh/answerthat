@@ -170,7 +170,66 @@ unreadable, and that diff is how the user verifies HR-5 with their own eyes (ADR
 > Append new entries at the bottom. Format: `YYYY-MM-DD · <agent> · <one-line title>` then 1–4 lines.
 > Include the thing you'd have wanted to know an hour earlier.
 
-*(empty — first agent to learn something non-obvious, start here)*
+2026-08-16 · B2 · The review pipeline was on the Anthropic SDK; migrated to `app/core/llm.py`
+`app/review/llm.py` built its own `AsyncAnthropic` client with `DEFAULT_MODEL =
+"claude-opus-5"` hardcoded. That bypassed per-role routing, the token budget and
+record/replay all at once — and would have made CI issue live calls. It is now a thin
+`ReviewLLM` adapter over B1's client. If you are adding a stage, declare an `LLMRole`; do
+not name a model. `tests/unit/b2/test_review_pipeline.py` greps `app/review/` for model
+IDs and SDK imports so this cannot come back quietly.
+
+2026-08-16 · B2 · `composition.get_llm()` read `settings.anthropic_api_key`, which no longer exists
+Nothing caught it because the only test that constructed the bundle failed earlier, on
+`Settings()` refusing to build without `OPENAI_API_KEY`. Lesson: a fixture that skips the
+credential check hides every downstream break behind one error. `tests/unit/b2/conftest.py`
+now sets all three fake keys autouse plus `LLM_MODE=replay`, so config is exercised for
+real and a stray model call fails on a missing recording rather than billing anyone.
+
+2026-08-16 · B2 · The embedding prefilter was missing, and its absence is silent
+ADR-015's cost control is the cascade, not a cheaper verifier. Fusion went straight to the
+`RERANK` model with no prefilter, and `keep_top` was a literal `5` rather than
+`VERIFY_KEEP`. Nothing fails when the prefilter is absent — the review is still correct,
+just several times more expensive per claim, which is exactly the pressure that later gets
+answered by downgrading `VERIFY`. `app/review/prefilter.py` now runs first and
+`build_review_runner()` wires it, so no caller has to remember.
+
+2026-08-16 · B2 · `openai` was not in `pyproject.toml` at all
+`app/core/llm.py` imports it lazily, so `LLM_MODE=replay` and the whole unit suite pass
+without it — live and record mode would have failed at the first call. Added, and the two
+dead SDKs (`anthropic`, `voyageai`) removed: a second model SDK in the lockfile is a second
+one somebody can import.
+
+2026-08-16 · B1 · A Protocol with no implementation is a pipeline stage that never runs
+`repair.py` had `ReferenceSegmenter` as a `Protocol`, every adversarial test passing against a
+fake, and no production implementation anywhere. `get_ingest_pipeline` defaulted
+`segmenter=None`, so ADR-003 was dead code on every real upload while looking fully built and
+fully tested. If a stage is optional in its constructor, grep for who supplies it before
+believing it runs.
+
+2026-08-16 · B1 · Default arguments are a second copy of a threshold
+`Arbiter(accept_threshold=0.85)` and `detect_style(ambiguity_margin=0.05)` carried the ADR-024
+values as defaults. Every caller passed `settings.…` correctly, so nothing was visibly wrong —
+until T1 sweeps the config and one forgotten keyword silently keeps the old number. Both are now
+required keyword arguments: the call fails rather than quietly disagreeing with config.
+
+2026-08-16 · B1 · OpenAI strict structured output has no optional fields
+`strict: true` requires `additionalProperties: false` and *every* property listed in `required`,
+at every level of nesting. "Optional" is expressed as `"type": ["string", "null"]`. For the
+repair tier this is a happy accident: the model must actively answer `null` rather than omit a
+key, and a schema that *required* a DOI would be a schema instructing the model to invent one.
+
+2026-08-16 · B1 · The substring check runs on our CSL, not on the model's answer
+`csl_from_segmentation()` reshapes the flat schema response into CSL-JSON *before*
+`check_substring_containment` sees it. A mapping bug that manufactures a value — gluing a particle
+onto a family name, carrying an empty string through — walks straight past the mechanism designed
+to catch fabrication, because `""` is a substring of everything. `test_segmenter.py` tests the
+mapping for exactly that reason.
+
+2026-08-16 · B1 · `.env.example` and `docker-compose.yml` are part of HR-2, not documentation
+`config.py` made `OPENAI_API_KEY` startup-fatal while compose was still passing
+`ANTHROPIC_API_KEY`. The code was correct and the deployment was guaranteed to abort — CP-1's
+first criterion, failing for a reason no unit test can see. Adding a required key changes three
+files, not one.
 
 ---
 
@@ -180,7 +239,37 @@ unreadable, and that diff is how the user verifies HR-5 with their own eyes (ADR
 > contract in `goal.md` meanwhile. **Never modify another agent's files.**
 > Format: `[OPEN|RESOLVED] <from> → <to> · <what you need> · <why> · <date>`
 
-*(empty)*
+[RESOLVED] B2 → B3 · IR-5, the review runner factory · `app/api/deps.py:144` reports
+"B2's streaming review runner is not wired". `app/review/` must not import B1's
+`DocumentStore` and B3's composition root owns it, so neither side could build the runner
+alone. B2's half now exists: `app.review.composition.build_review_runner(document_store)`
+returns a fully wired `ReviewRunner` — extractor, candidates, prefilter, reranker,
+verifier. `get_review_runner()` in `app/review/runner.py` wants a zero-argument callable,
+so bind it as `lambda: build_review_runner(document_store)`. Build it through that factory
+rather than by hand: `prefilter=` is optional on `ReviewRunner` and omitting it costs
+nothing visible while multiplying the per-claim model spend. · 2026-08-16
+
+[OPEN] B1 → B3 · Persist the uploaded PDF to `{UPLOAD_DIR}/{doc_id}.pdf` ·
+`app/api/routes/documents.py::upload` reads the payload into memory and hands it to
+`ingest.enqueue()`, but never writes it to disk, so ADR-022's "uploads on a local volume with the
+path recorded in Postgres" is not true and CP-1's upload criterion cannot be ticked. A crashed
+ingest currently cannot be retried, because the bytes are gone with the worker. Compose now
+mounts the `uploads` volume at `/data/uploads` and passes `UPLOAD_DIR`; `settings.upload_dir` is
+already there. B1 owns neither the route nor the jobs row, so this is yours. · 2026-08-16
+
+[OPEN] B1 → all · `anchor_fingerprints` keeps a bare table name, against the `ir_*` rule ·
+`goal.md` §3 says B1's tables are `ir_*`, and `goal.md` CP-1 plus ADR-017 both name the table
+`anchor_fingerprints` explicitly. Two rules in the same frozen document disagree. Resolved in
+favour of the more specific one: the table stays `anchor_fingerprints`, and
+`document_versions` → `ir_document_versions` (that name appears nowhere normative). Flagged
+rather than silently reinterpreted; if you want the prefix everywhere, it needs an ADR and a
+`make db-reset`, not a rename in passing. · 2026-08-16
+
+[OPEN] B1 → B2 · `tests/unit/b2/test_cascade.py` fails in the full-suite run, passes alone ·
+`test_a_candidate_with_no_embeddable_text_is_unjudged_not_rejected` asserts `"src_0"` and gets
+`"src_11"` when the whole suite runs — a module-level id counter shared with another b2 test file
+and not reset. `uv run pytest tests/unit/b2 -q` → 193 passed; `uv run pytest tests/unit -q` → that
+one fails. Not B1's file to fix, and worth fixing before CI treats it as flake. · 2026-08-16
 
 ---
 
@@ -189,7 +278,47 @@ unreadable, and that diff is how the user verifies HR-5 with their own eyes (ADR
 > Paste the proof when you claim a checkpoint. Test output, command output, screenshot paths.
 > Format: `CP-N · <agent> · <date>` followed by evidence per acceptance criterion.
 
-*(empty)*
+CP-4 · B2 · 2026-08-16 — **complete**
+
+`cd services/api && uv run pytest tests/unit/b2 -q` → `193 passed in 0.64s`
+
+| Criterion | Evidence |
+|---|---|
+| Three adapters behind the `Provider` protocol | `test_provider_protocol.py` — 21 passed |
+| Both keys required, `MissingAPIKeyError`, no fallback | `test_key_enforcement.py` — 12 passed |
+| Token-bucket limiter per provider (S2 ~1 rps, OpenAlex credit-aware) | `test_ratelimit.py` — 8 passed |
+| `mailto` on every OpenAlex/Crossref call | `test_openalex_and_crossref.py` — 28 passed |
+| Postgres cache on `(provider, endpoint, normalized_query_hash)` + TTL | `test_cache_keys.py` — 7 passed; `test_postgres_schema.py` — 8 passed |
+| `abstract_inverted_index` inverted to plain text | `test_openalex_and_crossref.py` |
+| Abstract fallback chain S2 → OpenAlex inverted → TLDR → `unavailable` | `test_semantic_scholar.py` — 22 passed |
+| Provider adapters the only `source_store` writers, **enforced** | `test_source_store_hr1.py` — 17 passed (runtime guard on the writer, plus a package-wide grep test) |
+
+CP-5 · B2 · 2026-08-16 — **complete**
+
+| Criterion | Evidence |
+|---|---|
+| Atomic claims with `span_id` + `anchor_ids` + `citability` | `test_review_pipeline.py` — 41 passed; claim text is sliced from the span and dropped if the model's echoed quote disagrees with its offsets |
+| All three candidate strategies live | `test_review_services.py` — 16 passed; `candidates.py` runs snippet / recommendations / OpenAlex search + one-hop concurrently |
+| RRF, dedupe by DOI/S2 id, subtract everything cited | `test_review_pipeline.py` fusion tests |
+| Rerank scores against **the claim**, not the topic | `test_review_pipeline.py`; unknown `source_id`s from the model are discarded, not looked up |
+| Verifier returns one of the five labels | `test_review_pipeline.py` |
+| Verbatim quote + mechanical substring check kills the finding | `test_review_pipeline.py` — a paraphrase and a fluent invention both die |
+| One verifier, both callers | `test_review_pipeline.py` — candidate path and existing-anchor path |
+| Findings stream ordered by citability desc with `verified / total` | `test_review_pipeline.py` streaming tests; B2 supplies the async generator, B3 owns the SSE framing |
+
+Also verified this pass, and not previously true:
+- **ADR-015** — every review call routes through `app/core/llm.py` by `LLMRole`;
+  `test_review_pipeline.py::test_each_stage_declares_its_role_so_config_can_choose_the_model`,
+  plus grep tests asserting no model SDK and no model ID anywhere under `app/review/`.
+- **ADR-019** — the three prompts are files in `app/review/prompts/`;
+  `test_cascade.py::test_the_three_prompts_are_files_on_disk` and the no-inline-prompt grep.
+- **ADR-024** — `CITABILITY_MIN`, `RERANK_KEEP`, `VERIFY_KEEP` read from config;
+  `test_cascade.py::test_thresholds_come_from_config_not_from_literals`.
+- **The cascade** — embedding prefilter → rerank → verify; `test_cascade.py` — 13 passed.
+
+`uv run ruff check app tests` → `All checks passed!`
+`uv run mypy app/review app/providers` → `Success: no issues found in 27 source files`
+Full backend suite: `uv run pytest tests/unit -q` → `582 passed`
 
 ---
 
