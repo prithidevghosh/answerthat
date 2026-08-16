@@ -37,6 +37,32 @@ class BagOfWordsEmbedder:
         return vector
 
 
+class FakeFingerprintStore:
+    """B1's `anchor_fingerprints` side table (ADR-017), in a dict.
+
+    Records `puts` and `lookups` so a test can assert the thing that matters about this
+    table: that the vector went *there* and not into the IR, and that an anchor which
+    already has a fingerprint reuses it instead of being re-embedded.
+    """
+
+    def __init__(self) -> None:
+        self.rows: dict[str, tuple[list[float], str]] = {}
+        self.puts: list[str] = []
+        self.lookups: list[list[str]] = []
+        self._next = 0
+
+    async def put(self, *, vector: list[float], text: str) -> str:
+        self._next += 1
+        fingerprint_id = f"fp-{self._next}"
+        self.rows[fingerprint_id] = (list(vector), text)
+        self.puts.append(fingerprint_id)
+        return fingerprint_id
+
+    async def get_many(self, fingerprint_ids: list[str]) -> dict[str, list[float]]:
+        self.lookups.append(list(fingerprint_ids))
+        return {fid: self.rows[fid][0] for fid in fingerprint_ids if fid in self.rows}
+
+
 class ScriptedTextModel:
     """Returns whatever it was told to return, and records what it was shown — which is how
     we assert that a citation marker never reached it."""
@@ -115,6 +141,13 @@ class ScriptedPlanner:
 
 
 class InMemoryDocumentStore:
+    """B1's copy-on-write store, in a dict — including its optimistic lock.
+
+    `put_version` raises `IRVersionConflict` on a stale `parent_version` exactly as B1's
+    does (ADR-021). Faking that away would let a lost-update bug pass here and lose a
+    user's edit in production, which is the one failure mode this store exists to prevent.
+    """
+
     def __init__(self) -> None:
         self._versions: dict[str, dict[int, object]] = {}
 
@@ -127,7 +160,14 @@ class InMemoryDocumentStore:
         return stored.model_copy(deep=True) if stored is not None else None
 
     async def put_version(self, document, *, parent_version: int):  # noqa: ANN001
+        from app.core.errors import IRVersionConflict
+
         versions = self._versions.setdefault(document.doc_id, {})
+        if versions and parent_version != max(versions):
+            raise IRVersionConflict(
+                f"document {document.doc_id!r} is at version {max(versions)}, but the change was "
+                f"computed against version {parent_version}"
+            )
         next_version = (max(versions) + 1) if versions else document.version
         stored = document.model_copy(deep=True, update={"version": next_version})
         versions[next_version] = stored
@@ -142,6 +182,7 @@ class InMemoryDocumentStore:
 
 __all__ = [
     "BagOfWordsEmbedder",
+    "FakeFingerprintStore",
     "InMemoryDocumentStore",
     "ScriptedClaims",
     "ScriptedPlanner",

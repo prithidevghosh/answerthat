@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 from conftest import make_anchor, make_span
-from fakes import BagOfWordsEmbedder, ScriptedTextModel
+from fakes import BagOfWordsEmbedder, FakeFingerprintStore, ScriptedTextModel
 
+from app.agent.thresholds import ReattachmentBand
 from app.agent.transform import (
     DetachTransformReattach,
     MarkerLeakError,
@@ -37,9 +38,26 @@ def block_with_two_cited_sentences() -> Block:
     )
 
 
-def pipeline(output: str, threshold: float = 0.82) -> tuple[DetachTransformReattach, ScriptedTextModel]:
+def pipeline(
+    output: str,
+    *,
+    accept: float = 0.82,
+    flag_floor: float = 0.55,
+    fingerprints: FakeFingerprintStore | None = None,
+) -> tuple[DetachTransformReattach, ScriptedTextModel]:
+    """The band is passed explicitly, never defaulted inside the pipeline (ADR-024).
+
+    Tests name the numbers they are probing, which is the point of having names for them —
+    the production values come from `app/core/config.py` and are swept, not asserted here.
+    """
     text_model = ScriptedTextModel(output)
-    return DetachTransformReattach(BagOfWordsEmbedder(), text_model, threshold=threshold), text_model
+    dtr = DetachTransformReattach(
+        BagOfWordsEmbedder(),
+        text_model,
+        fingerprints or FakeFingerprintStore(),
+        band=ReattachmentBand(accept=accept, flag_floor=flag_floor),
+    )
+    return dtr, text_model
 
 
 # --------------------------------------------------------------------------- text utils
@@ -181,13 +199,110 @@ async def test_reattachment_records_the_score_it_attached_at():
 @pytest.mark.asyncio
 async def test_fingerprints_are_recorded_at_detach_time():
     block = block_with_two_cited_sentences()
-    dtr, _model = pipeline("anything at all here")
+    store = FakeFingerprintStore()
+    dtr, _model = pipeline("anything at all here", fingerprints=store)
     _prose, detached = await dtr.detach(block)
-    assert all(d.anchor.context_fingerprint for d in detached)
+
+    assert all(d.fingerprint_id for d in detached)
+    assert all(d.vector for d in detached)
     assert [d.host_sentence for d in detached] == [
         "Transformers dominate sequence modelling across natural language tasks.",
         "Attention memory grows quadratically with the input length.",
     ]
+    # The sentence is stored beside the vector, so "why did this anchor reattach there?"
+    # stays an answerable question.
+    assert [text for _v, text in store.rows.values()] == [d.host_sentence for d in detached]
+
+
+@pytest.mark.asyncio
+async def test_the_vector_goes_to_the_side_table_and_the_ir_gets_an_id():
+    """ADR-017. A diff in which every anchor is 512 floats is unreadable, and that diff is
+    how the user verifies HR-5 with their own eyes."""
+    block = block_with_two_cited_sentences()
+    store = FakeFingerprintStore()
+    dtr, _model = pipeline(
+        "Transformers dominate sequence modelling across natural language tasks. "
+        "Attention memory grows quadratically with the input length.",
+        fingerprints=store,
+    )
+    report = await dtr.run(block, system="sys", instruction="noop")
+
+    attached = [a for span in report.new_spans for a in span.citation_anchors]
+    assert attached, "the anchors did not reattach, so this test proves nothing"
+    for anchor in attached:
+        assert anchor.fingerprint_id in store.rows
+        assert not hasattr(anchor, "context_fingerprint")
+        # The vector is nowhere in the serialised IR the user will diff.
+        assert "vector" not in anchor.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_an_anchor_that_already_has_a_fingerprint_is_not_re_embedded():
+    """Fingerprints are immutable and shared across versions (ADR-017): the sentence an
+    anchor *was* recorded against is what we match, not whatever it drifted into."""
+    store = FakeFingerprintStore()
+    recorded = await store.put(
+        vector=(await BagOfWordsEmbedder().embed(["Attention memory grows quadratically."]))[0],
+        text="Attention memory grows quadratically.",
+    )
+    store.puts.clear()
+
+    block = Block(
+        id="blk-1",
+        type="paragraph",
+        order=0,
+        spans=[
+            make_span(
+                "span-1",
+                "Attention memory grows quadratically with the input length.",
+                [make_anchor("anc-1", ["s2:bbb"], offset=59, fingerprint_id=recorded)],
+            )
+        ],
+    )
+    dtr, _model = pipeline("unused", fingerprints=store)
+    _prose, detached = await dtr.detach(block)
+
+    assert store.puts == [], "an anchor with a recorded fingerprint was re-embedded"
+    assert detached[0].fingerprint_id == recorded
+
+
+@pytest.mark.asyncio
+async def test_a_middling_score_attaches_but_is_flagged_rather_than_surfaced():
+    """The band between the floor and the accept threshold is the point of having two
+    numbers: placed, but shown to the user to check (ADR-024)."""
+    block = block_with_two_cited_sentences()
+    # The compression keeps each sentence recognisable but drops half its vocabulary, so
+    # both anchors land at ~0.71 — under the accept bar, over the floor.
+    dtr, _model = pipeline(
+        "Transformers dominate sequence modelling. Attention memory grows quadratically.",
+        accept=0.82,
+        flag_floor=0.55,
+    )
+    report = await dtr.run(block, system="sys", instruction="shorten")
+
+    assert report.orphaned_anchors == [], "a score above the floor must not become a prompt"
+    assert all(r.landed_span_id is not None for r in report.reattachments)
+    assert all(r.score is not None and r.score < r.threshold for r in report.reattachments), (
+        "these placements are the ones the kernel must FLAG"
+    )
+
+
+@pytest.mark.asyncio
+async def test_below_the_floor_nothing_is_proposed_and_the_user_decides():
+    block = block_with_two_cited_sentences()
+    # The same ~0.71 placements, judged against a floor they do not clear.
+    dtr, _model = pipeline(
+        "Transformers dominate sequence modelling. Attention memory grows quadratically.",
+        accept=0.90,
+        flag_floor=0.80,
+    )
+    report = await dtr.run(block, system="sys", instruction="shorten")
+
+    assert set(report.orphaned_anchor_ids) == {"anc-1", "anc-2"}
+    for record in report.reattachments:
+        assert record.landed_span_id is None
+        assert record.best_span_id is not None, "the near-miss span is kept so 'keep here' works"
+        assert record.flag_floor == 0.80
 
 
 @pytest.mark.asyncio

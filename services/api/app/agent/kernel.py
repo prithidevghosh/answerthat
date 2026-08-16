@@ -42,8 +42,6 @@ from app.core.contracts import (
     VerificationLabel,
 )
 
-DEFAULT_SIMILARITY_THRESHOLD = 0.82
-
 # Reject codes — one per normative REJECT rule in goal.md Appendix A.
 REJECT_UNKNOWN_SOURCE_ID = "unknown_source_id"          # rule 1 (HR-1)
 REJECT_CITATION_MULTISET_SHRANK = "citation_multiset_shrank"  # rule 2 (HR-5)
@@ -65,7 +63,16 @@ class ReattachmentRecord(BaseModel):
     anchor_id: str
     landed_span_id: str | None = None  # None → the anchor found no home
     score: float | None = None
-    threshold: float = DEFAULT_SIMILARITY_THRESHOLD
+    threshold: float
+    """`REATTACH_ACCEPT` as it stood when this anchor was placed.
+
+    Carried on the record rather than held by the kernel, which is why the kernel needs no
+    threshold of its own: the number a placement was judged against travels with the
+    placement, so a verdict stays readable after the config has moved on (ADR-024).
+    """
+    flag_floor: float | None = None
+    """`REATTACH_FLAG_FLOOR`. Recorded for the same reason, and so that a surfaced anchor
+    can say which of the two bars it fell under."""
     best_span_id: str | None = None
     """The argmax span regardless of threshold. Kept so that "keep it here" remains an
     option the user can actually take when an anchor falls below the bar — a decision the
@@ -100,16 +107,9 @@ class ChangeContext(BaseModel):
 class InvariantKernel:
     """Pure. Deterministic. Holds no model client and never acquires one."""
 
-    def __init__(
-        self,
-        sources: SourceReader,
-        render_probe: RenderProbe,
-        *,
-        similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
-    ) -> None:
+    def __init__(self, sources: SourceReader, render_probe: RenderProbe) -> None:
         self._sources = sources
         self._render = render_probe
-        self.similarity_threshold = similarity_threshold
 
     @property
     def sources(self) -> SourceReader:
@@ -415,13 +415,16 @@ class InvariantKernel:
         reasons: list[str] = []
 
         for record in context.reattachments:
-            threshold = record.threshold or self.similarity_threshold
-            if record.landed_span_id is not None and record.score is not None and record.score < threshold:
+            if record.landed_span_id is None or record.score is None:
+                continue
+            if record.score < record.threshold:
                 flags.append(FLAG_LOW_CONFIDENCE_REATTACHMENT)
                 reasons.append(
                     f"{FLAG_LOW_CONFIDENCE_REATTACHMENT}: anchor {record.anchor_id!r} reattached to span "
                     f"{record.landed_span_id!r} at similarity {record.score:.3f}, below the "
-                    f"{threshold:.2f} threshold. Check that it sits with the right sentence."
+                    f"{record.threshold:.2f} accept threshold. It is placed, because it scored above "
+                    f"the floor below which nothing is proposed — check that it sits with the right "
+                    f"sentence."
                 )
 
         before_anchors = anchors_by_id(before)
@@ -487,7 +490,6 @@ def _verdict(decision: Literal["reject", "flag"], reasons: list[str]) -> KernelV
 
 __all__ = [
     "ChangeContext",
-    "DEFAULT_SIMILARITY_THRESHOLD",
     "FLAG_LOW_CONFIDENCE_REATTACHMENT",
     "FLAG_ORPHANED_ANCHOR",
     "FLAG_WEAK_VERIFICATION",

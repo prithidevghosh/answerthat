@@ -8,9 +8,10 @@ implemented, it is merely written.
 from __future__ import annotations
 
 import pytest
-from conftest import AlwaysRenders
+from conftest import TEST_BAND, AlwaysRenders
 from fakes import (
     BagOfWordsEmbedder,
+    FakeFingerprintStore,
     ScriptedClaims,
     ScriptedRetrieval,
     ScriptedTextModel,
@@ -37,6 +38,8 @@ def build_executor(sources, *, text_output="rewritten prose here.", claims=None,
         claims=ScriptedClaims(claims or []),
         embedder=BagOfWordsEmbedder(),
         text_model=ScriptedTextModel(text_output),
+        fingerprints=FakeFingerprintStore(),
+        band=TEST_BAND,
     )
 
 

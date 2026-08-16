@@ -1,12 +1,15 @@
 """Detach → transform → reattach (ADR-013) — the mechanism behind HR-5.
 
-    1. DETACH     pull the anchors out of the target, recording each one's
-                  context_fingerprint (an embedding of its host sentence)
+    1. DETACH     pull the anchors out of the target, recording each one's context
+                  fingerprint — an embedding of its host sentence, stored in the
+                  `anchor_fingerprints` side table and referenced by id (ADR-017)
     2. TRANSFORM  compress or rewrite the TEXT ONLY
                   ── the model never sees or emits a citation marker ──
-    3. REATTACH   score each fingerprint against every new sentence,
-                  attach at argmax if >= threshold
-    4. SURFACE    any anchor below threshold is NOT dropped — it becomes a
+    3. REATTACH   score each fingerprint against every new sentence and take the argmax:
+                    >= REATTACH_ACCEPT        attach
+                    >= REATTACH_FLAG_FLOOR    attach, flagged for the user to check
+                    below that                propose nothing
+    4. SURFACE    an anchor with no confident home is NOT dropped — it becomes a
                   user decision: keep here / move to… / remove
 
 Step 2 is the whole trick: you cannot lose a citation you never showed the model. Step 4
@@ -23,8 +26,9 @@ import math
 import re
 from dataclasses import dataclass, field
 
-from app.agent.kernel import DEFAULT_SIMILARITY_THRESHOLD, ReattachmentRecord
-from app.agent.ports import Embedder, TextModel
+from app.agent.kernel import ReattachmentRecord
+from app.agent.ports import Embedder, FingerprintStore, TextModel
+from app.agent.thresholds import ReattachmentBand
 from app.core.contracts import Block, CitationAnchor, Span
 
 # Sentence boundaries, guarded against the abbreviations academic prose is full of.
@@ -44,11 +48,17 @@ class MarkerLeakError(RuntimeError):
 
 @dataclass(frozen=True)
 class DetachedAnchor:
-    """An anchor lifted out of the text, with the context needed to put it back."""
+    """An anchor lifted out of the text, with the context needed to put it back.
+
+    The vector is held here for the duration of one transform and written nowhere near the
+    IR. What lands on the reattached anchor is `fingerprint_id` (ADR-017).
+    """
 
     anchor: CitationAnchor
     origin_span_id: str
     host_sentence: str
+    fingerprint_id: str
+    vector: list[float]
 
 
 @dataclass
@@ -149,42 +159,83 @@ class DetachTransformReattach:
         self,
         embedder: Embedder,
         text_model: TextModel,
+        fingerprints: FingerprintStore,
         *,
-        threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        band: ReattachmentBand,
     ) -> None:
         self._embedder = embedder
         self._text = text_model
-        self.threshold = threshold
+        self._fingerprints = fingerprints
+        self.band = band
+
+    @property
+    def threshold(self) -> float:
+        """`REATTACH_ACCEPT`. Named for the records and messages that quote it."""
+        return self.band.accept
 
     # ---- 1. DETACH
 
     async def detach(self, block: Block) -> tuple[str, list[DetachedAnchor]]:
-        """Returns marker-free prose and the anchors lifted out of it."""
-        detached: list[DetachedAnchor] = []
+        """Returns marker-free prose and the anchors lifted out of it.
+
+        Every detached anchor comes back with a fingerprint id and its vector. An anchor
+        that already carries an id reuses the stored vector — fingerprints are immutable
+        and shared across versions (ADR-017), so the sentence an anchor *was* recorded
+        against is the thing we match, not whatever it drifted into since.
+        """
+        pending: list[tuple[CitationAnchor, str, str]] = []
         parts: list[str] = []
 
         for span in block.spans:
             parts.append(scrub_markers(span.text, span.citation_anchors))
             for anchor in span.citation_anchors:
-                detached.append(
-                    DetachedAnchor(
-                        anchor=anchor,
-                        origin_span_id=span.id,
-                        host_sentence=host_sentence_for(span.text, anchor.offset_in_span),
-                    )
+                pending.append(
+                    (anchor, span.id, host_sentence_for(span.text, anchor.offset_in_span))
                 )
 
-        needs_fingerprint = [d for d in detached if not d.anchor.context_fingerprint]
-        if needs_fingerprint:
-            vectors = await self._embedder.embed([d.host_sentence for d in needs_fingerprint])
-            if len(vectors) != len(needs_fingerprint):
+        prose = " ".join(p for p in parts if p).strip()
+        if not pending:
+            return prose, []
+
+        stored = await self._fingerprints.get_many(
+            [a.fingerprint_id for a, _s, _h in pending if a.fingerprint_id]
+        )
+
+        # A recorded id whose row is gone is re-derived rather than treated as absent.
+        # This is not a "best effort" fallback: the fingerprint is a function of the
+        # sentence, and we still have the sentence, so re-embedding recovers exactly the
+        # information that was lost — no guess is involved.
+        needs = [(a, s, h) for a, s, h in pending if (a.fingerprint_id or "") not in stored]
+        fresh: dict[int, tuple[str, list[float]]] = {}
+        if needs:
+            vectors = await self._embedder.embed([host for _a, _s, host in needs])
+            if len(vectors) != len(needs):
                 raise RuntimeError(
-                    f"embedder returned {len(vectors)} vectors for {len(needs_fingerprint)} sentences"
+                    f"embedder returned {len(vectors)} vectors for {len(needs)} sentences; "
+                    f"positional alignment is the only way to match a vector to its anchor"
                 )
-            for detached_anchor, vector in zip(needs_fingerprint, vectors, strict=True):
-                detached_anchor.anchor.context_fingerprint = vector
+            for (anchor, _span_id, host), vector in zip(needs, vectors, strict=True):
+                fingerprint_id = await self._fingerprints.put(vector=vector, text=host)
+                fresh[id(anchor)] = (fingerprint_id, vector)
 
-        return " ".join(p for p in parts if p).strip(), detached
+        detached: list[DetachedAnchor] = []
+        for anchor, span_id, host in pending:
+            if id(anchor) in fresh:
+                fingerprint_id, vector = fresh[id(anchor)]
+            else:
+                fingerprint_id = anchor.fingerprint_id or ""
+                vector = stored[fingerprint_id]
+            detached.append(
+                DetachedAnchor(
+                    anchor=anchor,
+                    origin_span_id=span_id,
+                    host_sentence=host,
+                    fingerprint_id=fingerprint_id,
+                    vector=vector,
+                )
+            )
+
+        return prose, detached
 
     # ---- 2. TRANSFORM
 
@@ -215,8 +266,13 @@ class DetachTransformReattach:
             # none is dropped. The caller's kernel verdict will flag them.
             report.orphaned_anchors = [d.anchor for d in detached]
             report.reattachments = [
-                ReattachmentRecord(anchor_id=d.anchor.anchor_id, landed_span_id=None, score=None,
-                                   threshold=self.threshold)
+                ReattachmentRecord(
+                    anchor_id=d.anchor.anchor_id,
+                    landed_span_id=None,
+                    score=None,
+                    threshold=self.band.accept,
+                    flag_floor=self.band.flag_floor,
+                )
                 for d in detached
             ]
             return report
@@ -234,27 +290,40 @@ class DetachTransformReattach:
             )
 
         for detached_anchor in detached:
-            fingerprint = detached_anchor.anchor.context_fingerprint or []
-            scores = [cosine(fingerprint, vector) for vector in sentence_vectors]
+            scores = [cosine(detached_anchor.vector, vector) for vector in sentence_vectors]
             best_index = max(range(len(scores)), key=scores.__getitem__) if scores else -1
-            best_score = scores[best_index] if best_index >= 0 else 0.0
+            best_score = scores[best_index] if best_index >= 0 else None
+            best_span_id = new_spans[best_index].id if best_index >= 0 else None
+            verdict = self.band.verdict_for(best_score)
 
-            if best_index < 0 or best_score < self.threshold:
+            if verdict == "surface":
+                # Below the floor there is no honest proposal to make. Not a deletion: the
+                # anchor is handed to the user with the sentence it came closest to, so
+                # "keep it here" stays an option they can actually take.
                 report.orphaned_anchors.append(detached_anchor.anchor)
                 report.reattachments.append(
                     ReattachmentRecord(
                         anchor_id=detached_anchor.anchor.anchor_id,
                         landed_span_id=None,
-                        score=best_score if best_index >= 0 else None,
-                        threshold=self.threshold,
-                        best_span_id=new_spans[best_index].id if best_index >= 0 else None,
+                        score=best_score,
+                        threshold=self.band.accept,
+                        flag_floor=self.band.flag_floor,
+                        best_span_id=best_span_id,
                     )
                 )
                 continue
 
+            # `accept` and `flag` both attach. The difference is what the kernel does with
+            # the record: a score under REATTACH_ACCEPT raises FLAG rule 1 and the user is
+            # shown the placement to check, rather than being asked to make it themselves.
+            assert best_index >= 0 and best_score is not None
             target = new_spans[best_index]
             placed = detached_anchor.anchor.model_copy(
-                update={"offset_in_span": len(target.text), "confidence": round(best_score, 4)}
+                update={
+                    "offset_in_span": len(target.text),
+                    "confidence": round(best_score, 4),
+                    "fingerprint_id": detached_anchor.fingerprint_id,
+                }
             )
             by_id[target.id].citation_anchors.append(placed)
             report.reattachments.append(
@@ -262,7 +331,8 @@ class DetachTransformReattach:
                     anchor_id=placed.anchor_id,
                     landed_span_id=target.id,
                     score=best_score,
-                    threshold=self.threshold,
+                    threshold=self.band.accept,
+                    flag_floor=self.band.flag_floor,
                     best_span_id=target.id,
                 )
             )

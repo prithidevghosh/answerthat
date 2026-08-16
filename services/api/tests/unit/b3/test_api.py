@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import AlwaysRenders
+from conftest import TEST_BAND, AlwaysRenders
 from fakes import (
     BagOfWordsEmbedder,
+    FakeFingerprintStore,
     InMemoryDocumentStore,
     ScriptedClaims,
     ScriptedPlanner,
@@ -74,6 +75,8 @@ def build_client(base_document, sources, *, planner_responses=None, text_output=
         embedder=BagOfWordsEmbedder(),
         text_model=ScriptedTextModel(text_output),
         structured_model=ScriptedPlanner(planner_responses or [SHORTEN_PLAN]),
+        fingerprints=FakeFingerprintStore(),
+        band=TEST_BAND,
         settings=None,
     )
     return TestClient(create_app(services)), services, documents
@@ -208,7 +211,10 @@ def test_approval_commits_a_new_version(base_document, sources):
 
     response = client.post(
         f"/api/change-sets/{proposal['change_set_id']}/approve",
-        json={"approved_change_ids": [c["change"]["change_id"] for c in proposal["changes"]]},
+        json={
+            "base_version": proposal["base_version"],
+            "approved_change_ids": [c["change"]["change_id"] for c in proposal["changes"]],
+        },
     )
     assert response.status_code == 200
     body = response.json()
@@ -225,7 +231,7 @@ def test_approving_nothing_writes_nothing(base_document, sources):
     ).json()
 
     body = client.post(
-        f"/api/change-sets/{proposal['change_set_id']}/approve", json={"approved_change_ids": []}
+        f"/api/change-sets/{proposal['change_set_id']}/approve", json={"base_version": proposal["base_version"], "approved_change_ids": []}
     ).json()
     assert body["committed"] is False
 
@@ -241,7 +247,10 @@ def test_an_undecided_orphan_blocks_approval_with_a_409(base_document, sources):
 
     response = client.post(
         f"/api/change-sets/{proposal['change_set_id']}/approve",
-        json={"approved_change_ids": [c["change"]["change_id"] for c in proposal["changes"]]},
+        json={
+            "base_version": proposal["base_version"],
+            "approved_change_ids": [c["change"]["change_id"] for c in proposal["changes"]],
+        },
     )
     assert response.status_code == 409
     assert response.json()["error"] == "approval_invalid"
@@ -285,7 +294,7 @@ def test_a_failed_change_set_cannot_be_approved(base_document, sources):
     ).json()
 
     response = client.post(
-        f"/api/change-sets/{proposal['change_set_id']}/approve", json={"approved_change_ids": []}
+        f"/api/change-sets/{proposal['change_set_id']}/approve", json={"base_version": proposal["base_version"], "approved_change_ids": []}
     )
     assert response.status_code == 409
     assert "nothing to approve" in response.json()["detail"]
@@ -298,7 +307,10 @@ def test_versions_and_revert(base_document, sources):
     ).json()
     client.post(
         f"/api/change-sets/{proposal['change_set_id']}/approve",
-        json={"approved_change_ids": [c["change"]["change_id"] for c in proposal["changes"]]},
+        json={
+            "base_version": proposal["base_version"],
+            "approved_change_ids": [c["change"]["change_id"] for c in proposal["changes"]],
+        },
     )
 
     versions = client.get(f"/api/documents/{base_document.doc_id}/versions").json()

@@ -148,7 +148,7 @@ def test_rejects_an_anchor_that_found_no_home_and_was_not_surfaced(kernel, base_
         change=change({"replace_spans": [rewritten.model_dump()]}),
         context=ChangeContext(
             derived_spans={"span-2": ["span-2"]},
-            reattachments=[ReattachmentRecord(anchor_id="anc-2", landed_span_id=None, score=0.31)],
+            reattachments=[ReattachmentRecord(anchor_id="anc-2", landed_span_id=None, score=0.31, threshold=0.72)],
         ),
     )
     assert verdict.decision == "reject"
@@ -167,7 +167,7 @@ def test_surfacing_the_same_anchor_turns_the_reject_into_a_flag(kernel, base_doc
         ),
         context=ChangeContext(
             derived_spans={"span-2": ["span-2"]},
-            reattachments=[ReattachmentRecord(anchor_id="anc-2", landed_span_id=None, score=0.31)],
+            reattachments=[ReattachmentRecord(anchor_id="anc-2", landed_span_id=None, score=0.31, threshold=0.72)],
         ),
     )
     assert verdict.decision == "flag"

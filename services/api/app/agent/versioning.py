@@ -56,6 +56,9 @@ class OrphanDecision(BaseModel):
 
 class ApprovalRequest(BaseModel):
     change_set_id: str
+    base_version: int
+    """The version the user was looking at when they approved (ADR-021). Required, and
+    checked against both the proposal and the live head before anything is written."""
     approved_change_ids: list[str] = Field(default_factory=list)
     rejected_change_ids: list[str] = Field(default_factory=list)
     orphan_decisions: list[OrphanDecision] = Field(default_factory=list)
@@ -79,6 +82,23 @@ class ApprovalError(RuntimeError):
     """The approval request itself is malformed. Surfaced to the user, never guessed at."""
 
 
+class VersionConflict(RuntimeError):
+    """The head moved between planning and approving (ADR-021).
+
+    Refusing and re-planning is the honest response. Merging two IR fragments
+    automatically is not something we can do safely without understanding both edits, and
+    committing anyway would show the user a successful approval over a document missing
+    their earlier one — the invisible failure HR-3 exists to prevent.
+    """
+
+    def __init__(self, doc_id: str, base_version: int, current_version: int | None, detail: str) -> None:
+        super().__init__(detail)
+        self.doc_id = doc_id
+        self.base_version = base_version
+        self.current_version = current_version
+        self.detail = detail
+
+
 class VersionService:
     def __init__(self, documents: DocumentStore, kernel: InvariantKernel) -> None:
         self._documents = documents
@@ -94,6 +114,8 @@ class VersionService:
                 f"approval names change set {request.change_set_id!r} but "
                 f"{change_set.change_set_id!r} was supplied"
             )
+
+        await self._assert_head_unmoved(change_set, request)
 
         base = await self._documents.get(change_set.doc_id, change_set.base_version)
         if base is None:
@@ -180,6 +202,43 @@ class VersionService:
                 + "This version is revertible."
             ),
         )
+
+    async def _assert_head_unmoved(
+        self, change_set: ProposedChangeSet, request: ApprovalRequest
+    ) -> None:
+        """Optimistic locking, checked twice on purpose (ADR-021).
+
+        First that the user approved the proposal they were shown — a stale browser tab
+        holding an older change set is the ordinary way this goes wrong. Then that the
+        document's head is still where the proposal was computed, because between planning
+        and approving someone (or the same user in another tab) may have committed.
+
+        B1's store enforces this a third time at write, comparing `parent_version` to the
+        head inside the transaction. That is the one that is actually race-free; these two
+        exist so the user gets a specific, actionable 409 instead of a write error.
+        """
+        if request.base_version != change_set.base_version:
+            raise VersionConflict(
+                change_set.doc_id,
+                request.base_version,
+                change_set.base_version,
+                f"this approval was composed against v{request.base_version}, but the change set "
+                f"being approved was planned against v{change_set.base_version}. Re-read the "
+                f"proposal before approving it.",
+            )
+
+        head = await self._documents.get(change_set.doc_id)
+        if head is None:
+            raise ApprovalError(f"document {change_set.doc_id} does not exist")
+        if head.version != change_set.base_version:
+            raise VersionConflict(
+                change_set.doc_id,
+                change_set.base_version,
+                head.version,
+                f"document {change_set.doc_id} has moved to v{head.version} since this change set "
+                f"was planned against v{change_set.base_version}. Nothing was written — re-plan "
+                f"against the new head rather than overwriting the intervening edit.",
+            )
 
     @staticmethod
     def _assert_multiset_preserved(
@@ -358,6 +417,9 @@ def _reattached(orphan, offset: int) -> CitationAnchor:  # noqa: ANN001
         original_marker_text=orphan.marker,
         provenance_kind="parsed",
         confidence=orphan.score if orphan.score is not None else 0.0,
+        # The anchor keeps the context it was originally recorded against (ADR-017). The
+        # user decided where it goes; that decision does not rewrite its history.
+        fingerprint_id=orphan.fingerprint_id,
     )
 
 
@@ -366,5 +428,6 @@ __all__ = [
     "ApprovalRequest",
     "CommitResult",
     "OrphanDecision",
+    "VersionConflict",
     "VersionService",
 ]

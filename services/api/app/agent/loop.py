@@ -49,10 +49,16 @@ class OrphanOption(BaseModel):
     anchor_id: str
     marker: str | None = None
     source_ids: list[str] = Field(default_factory=list)
+    fingerprint_id: str | None = None
+    """Carried so that keeping or moving the anchor preserves its recorded context rather
+    than re-deriving one from wherever the user put it (ADR-017)."""
     best_span_id: str | None = None
     best_span_text: str | None = None
     score: float | None = None
     threshold: float | None = None
+    flag_floor: float | None = None
+    """The two bars this anchor fell under, so the UI can say *how* uncertain it was rather
+    than only that it was."""
     actions: list[OrphanAction] = Field(default_factory=_all_orphan_actions)
 
 
@@ -290,10 +296,12 @@ def _orphan_options(
                 anchor_id=anchor_id,
                 marker=anchor.original_marker_text,
                 source_ids=list(anchor.source_ids),
+                fingerprint_id=anchor.fingerprint_id,
                 best_span_id=best_span.id if best_span else None,
                 best_span_text=best_span.text if best_span else None,
                 score=record.score if record else None,
                 threshold=record.threshold if record else None,
+                flag_floor=record.flag_floor if record else None,
             )
         )
     return options

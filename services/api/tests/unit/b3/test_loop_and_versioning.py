@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from conftest import AlwaysRenders
+from conftest import TEST_BAND, AlwaysRenders
 from fakes import (
     BagOfWordsEmbedder,
+    FakeFingerprintStore,
     InMemoryDocumentStore,
     ScriptedClaims,
     ScriptedPlanner,
@@ -59,6 +60,8 @@ def build_loop(sources, planner_responses, *, text_output=CLEAN_REWRITE, claims=
         claims=ScriptedClaims(claims or []),
         embedder=BagOfWordsEmbedder(),
         text_model=ScriptedTextModel(text_output),
+        fingerprints=FakeFingerprintStore(),
+        band=TEST_BAND,
     )
     model = ScriptedPlanner(planner_responses)
     loop = CommandLoop(
@@ -234,7 +237,7 @@ async def propose(sources, base_document, plan=SHORTEN_PLAN, text_output=CLEAN_R
 @pytest.mark.asyncio
 async def test_approving_nothing_writes_no_version(sources, base_document):
     result, versions, documents = await propose(sources, base_document)
-    commit = await versions.commit(result, ApprovalRequest(change_set_id=result.change_set_id))
+    commit = await versions.commit(result, ApprovalRequest(change_set_id=result.change_set_id, base_version=result.base_version))
 
     assert not commit.committed
     assert await documents.list_versions("doc-1") == [1]
@@ -247,6 +250,7 @@ async def test_approving_a_change_commits_a_new_revertible_version(sources, base
         result,
         ApprovalRequest(
             change_set_id=result.change_set_id,
+            base_version=result.base_version,
             approved_change_ids=[c.change_id for c in result.changes],
         ),
     )
@@ -275,6 +279,7 @@ async def test_an_unresolved_orphan_blocks_the_commit(sources, base_document):
             result,
             ApprovalRequest(
                 change_set_id=result.change_set_id,
+                base_version=result.base_version,
                 approved_change_ids=[c.change_id for c in result.changes],
             ),
         )
@@ -293,6 +298,7 @@ async def test_keeping_an_orphan_puts_the_citation_back_in_the_document(sources,
         result,
         ApprovalRequest(
             change_set_id=result.change_set_id,
+            base_version=result.base_version,
             approved_change_ids=[c.change_id for c in result.changes],
             orphan_decisions=decisions,
         ),
@@ -318,6 +324,7 @@ async def test_removing_an_orphan_is_allowed_only_because_the_user_said_so(sourc
         result,
         ApprovalRequest(
             change_set_id=result.change_set_id,
+            base_version=result.base_version,
             approved_change_ids=[c.change_id for c in result.changes],
             orphan_decisions=decisions,
         ),
@@ -340,6 +347,7 @@ async def test_a_decision_naming_an_anchor_that_is_not_waiting_is_refused(source
             result,
             ApprovalRequest(
                 change_set_id=result.change_set_id,
+                base_version=result.base_version,
                 approved_change_ids=[c.change_id for c in result.changes],
                 orphan_decisions=[OrphanDecision(anchor_id="anc-1", action="remove")],
             ),
@@ -356,6 +364,7 @@ async def test_moving_an_orphan_requires_a_destination(sources, base_document):
             result,
             ApprovalRequest(
                 change_set_id=result.change_set_id,
+                base_version=result.base_version,
                 approved_change_ids=[c.change_id for c in result.changes],
                 orphan_decisions=[
                     OrphanDecision(anchor_id=o.anchor_id, action="move")
@@ -391,7 +400,9 @@ async def test_the_commit_boundary_refuses_an_unapproved_loss(sources, base_docu
         await versions.commit(
             result,
             ApprovalRequest(
-                change_set_id=result.change_set_id, approved_change_ids=[approved.change_id]
+                change_set_id=result.change_set_id,
+                base_version=result.base_version,
+                approved_change_ids=[approved.change_id],
             ),
         )
     assert await documents.list_versions("doc-1") == [1]
@@ -403,7 +414,11 @@ async def test_approving_an_unknown_change_id_is_an_error(sources, base_document
     with pytest.raises(ApprovalError, match="not in this set"):
         await versions.commit(
             result,
-            ApprovalRequest(change_set_id=result.change_set_id, approved_change_ids=["nope"]),
+            ApprovalRequest(
+                change_set_id=result.change_set_id,
+                base_version=result.base_version,
+                approved_change_ids=["nope"],
+            ),
         )
 
 
@@ -469,6 +484,7 @@ async def test_commit_warms_before_re_judging(sources, base_document):
         result,
         ApprovalRequest(
             change_set_id=result.change_set_id,
+            base_version=result.base_version,
             approved_change_ids=[c.change_id for c in result.changes],
         ),
     )

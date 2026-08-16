@@ -113,22 +113,53 @@ class SourceReader(Protocol):
 
 
 @runtime_checkable
+class FingerprintStore(Protocol):
+    """B1's `anchor_fingerprints` side table (ADR-017).
+
+    An anchor carries a `fingerprint_id`; the 512-float vector lives here. Never inline in
+    the IR, for the reason that outranks storage: **the structural diff is how a user
+    verifies HR-5 with their own eyes**, and a diff in which every anchor renders as 512
+    floats is unreadable.
+
+    Rows are immutable and shared across versions. Re-embedding a sentence writes a new
+    row with a new id rather than overwriting an old one, so a fingerprint referenced by an
+    older version can never change under it.
+    """
+
+    async def put(self, *, vector: list[float], text: str) -> str:
+        """Store one vector with the sentence it came from. Returns its `fingerprint_id`."""
+        ...
+
+    async def get_many(self, fingerprint_ids: list[str]) -> dict[str, list[float]]:
+        """`fingerprint_id → vector`, omitting ids the table does not hold."""
+        ...
+
+
+# --------------------------------------------------------------------------- model ports
+
+
+@runtime_checkable
 class Embedder(Protocol):
-    """Sentence embeddings for citation `context_fingerprint`s (ADR-013)."""
+    """Sentence embeddings for anchor context fingerprints (ADR-013, ADR-016).
+
+    Backed by `LLMClient.embed()` in production — B3 never constructs an OpenAI client of
+    its own, because per-role routing, the token budget and record/replay all live in
+    `app/core/llm.py` and none of them survive a second call site (ADR-015, ADR-018).
+    """
 
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
 @runtime_checkable
 class TextModel(Protocol):
-    """Prose rewriting only. Never sees a citation marker (ADR-013 step 2)."""
+    """Prose rewriting only, role `TRANSFORM`. Never sees a citation marker (ADR-013 step 2)."""
 
     async def rewrite(self, *, system: str, instruction: str, text: str) -> str: ...
 
 
 @runtime_checkable
 class StructuredModel(Protocol):
-    """Planner backend. Structured output only — it cannot return prose."""
+    """Planner backend, role `PLAN`. Structured output only — it cannot return prose."""
 
     async def plan(self, *, system: str, prompt: str, schema: dict) -> dict: ...
 
@@ -139,6 +170,7 @@ __all__ = [
     "DocumentStore",
     "Embedder",
     "Exporter",
+    "FingerprintStore",
     "RenderProbe",
     "RetrievalService",
     "ReviewRunner",

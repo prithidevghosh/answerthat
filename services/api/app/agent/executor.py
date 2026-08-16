@@ -36,11 +36,13 @@ from app.agent.operations import (
 from app.agent.ports import (
     ClaimExtractor,
     Embedder,
+    FingerprintStore,
     RetrievalService,
     SourceReader,
     TextModel,
     VerificationService,
 )
+from app.agent.thresholds import ReattachmentBand
 from app.agent.transform import DetachTransformReattach, TransformReport, host_sentence_for
 from app.core.contracts import (
     Block,
@@ -133,17 +135,14 @@ class OperationExecutor:
         claims: ClaimExtractor,
         embedder: Embedder,
         text_model: TextModel,
-        similarity_threshold: float | None = None,
+        fingerprints: FingerprintStore,
+        band: ReattachmentBand,
     ) -> None:
         self._sources = sources
         self._retrieval = retrieval
         self._verifier = verifier
         self._claims = claims
-        self._dtr = (
-            DetachTransformReattach(embedder, text_model, threshold=similarity_threshold)
-            if similarity_threshold is not None
-            else DetachTransformReattach(embedder, text_model)
-        )
+        self._dtr = DetachTransformReattach(embedder, text_model, fingerprints, band=band)
 
     async def execute(self, document: Document, operation: Operation) -> Execution:
         try:

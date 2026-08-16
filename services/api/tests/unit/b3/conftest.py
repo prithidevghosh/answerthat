@@ -11,6 +11,7 @@ ensure_contracts_importable()
 
 import pytest  # noqa: E402
 
+from app.agent.thresholds import ReattachmentBand  # noqa: E402
 from app.core.contracts import (  # noqa: E402
     AbstractSource,
     Block,
@@ -23,6 +24,13 @@ from app.core.contracts import (  # noqa: E402
     Verification,
     VerificationLabel,
 )
+
+# ADR-024's starting values, mirrored so these tests exercise the band the product ships
+# with. A test probing a specific boundary builds its own band and says which number it is
+# probing; nothing here reads config, because a unit test that depends on an env var is a
+# test that fails for reasons unrelated to the code under it.
+TEST_BAND = ReattachmentBand(accept=0.72, flag_floor=0.55)
+
 
 # --------------------------------------------------------------------------- fakes
 
