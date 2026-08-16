@@ -7,3 +7,5 @@ next-env.d.ts
 # on predev/prebuild. The shared package is the source of truth (HR-4).
 public/csl/*.csl
 public/csl/styles.json
+.vercel
+.env*
