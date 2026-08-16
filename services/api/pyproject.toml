@@ -16,12 +16,15 @@ dependencies = [
     "lxml>=5.3",
     "python-multipart>=0.0.17",
     "rapidfuzz>=3.10",
-    "anthropic>=0.40",
-    # Added for B3's API layer and B2's embedding path. Kept here rather than in a
-    # second requirements file so the container and the dev venv install the same set.
+    # The only model SDK. Imported lazily by `app/core/llm.py` and nowhere else, so
+    # LLM_MODE=replay runs without it (ADR-015 / ADR-018). `anthropic` and `voyageai`
+    # were removed with the review pipeline's migration onto this client — a second SDK
+    # in the lockfile is a second one somebody can import.
+    "openai>=1.60",
+    # Added for B3's API layer. Kept here rather than in a second requirements file so
+    # the container and the dev venv install the same set.
     "sse-starlette>=2.1",
     "arq>=0.26",
-    "voyageai>=0.3",
 ]
 
 [project.optional-dependencies]
