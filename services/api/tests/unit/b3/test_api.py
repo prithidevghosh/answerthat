@@ -376,3 +376,35 @@ def test_starting_a_review_returns_a_job_id_and_the_stream_url(base_document, so
     body = response.json()
     assert body["job_id"] == "job-review-1"
     assert body["stream"] == "/api/documents/doc-1/review/stream"
+
+
+# ===========================================================================
+# ADR-015 — one client, one place a model is named
+# ===========================================================================
+
+
+def test_no_model_id_or_sdk_import_appears_anywhere_in_b3():
+    """`settings.model_for(role)` is the only sanctioned way to name a model, and
+    `app/core/llm.py` is the only path to the API.
+
+    Checked mechanically because the failure is invisible: a second client still works,
+    it just silently bypasses per-role routing, the token budget and record/replay — and
+    then CI, which is supposed to make zero live calls, starts making them.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[3] / "app"
+    model_id = re.compile(r"\bgpt-[0-9]|\bclaude-[a-z0-9]|\bvoyage-[0-9]|text-embedding-")
+    sdk_import = re.compile(r"^\s*(?:from|import)\s+(anthropic|openai|voyageai)\b", re.MULTILINE)
+
+    offenders: list[str] = []
+    for package in ("agent", "api"):
+        for path in sorted((root / package).rglob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            if model_id.search(text):
+                offenders.append(f"{path.relative_to(root)}: names a model id")
+            if sdk_import.search(text):
+                offenders.append(f"{path.relative_to(root)}: imports a model SDK")
+
+    assert not offenders, "\n".join(offenders)

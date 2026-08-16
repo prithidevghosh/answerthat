@@ -231,6 +231,44 @@ mapping for exactly that reason.
 first criterion, failing for a reason no unit test can see. Adding a required key changes three
 files, not one.
 
+2026-08-16 · B3 · The kernel needed no threshold at all, and that was the tell
+`InvariantKernel` carried `similarity_threshold=0.82` — a fourth copy of a number ADR-024 says
+lives in config, and it only existed as a fallback for records that didn't set their own. Making
+`ReattachmentRecord.threshold` required deleted the field, the constant and the constructor
+argument together. If a pure component holds a tunable, ask whether the value belongs on the
+*evidence* instead: a placement carrying the bar it was judged against stays readable after the
+config moves, and the judge stops having an opinion it doesn't need.
+
+2026-08-16 · B3 · Two thresholds were being used as one, so the FLAG band was unreachable
+ADR-024 defines `REATTACH_ACCEPT` **and** `REATTACH_FLAG_FLOOR`; the transform used a single bar
+and orphaned everything under it. Kernel FLAG rule 1 — "an anchor reattached below the similarity
+threshold" — therefore described a state the code could not produce, and every merely-uncertain
+placement became a modal the user had to answer. Three bands now: attach, attach-and-flag,
+surface. If a config pair is only ever read as a single value, one of the two ADR states is dead.
+
+2026-08-16 · B3 · B1 and B2 expose `enqueue`/`start`/`status` **synchronously**
+Both launch their background work with `asyncio.create_task` rather than through arq, so those
+methods return `str`/`dict`, not coroutines. B3's routes awaited them, which raises
+`TypeError: object str can't be used in 'await' expression` on the very first upload — and no
+unit test caught it because every test double was async. `app.api.adapters.maybe_await` bridges
+it at the call site. If you write a fake, match the real signature's *sync-ness*, not the port's.
+
+2026-08-16 · B3 · A dead worker cannot report its own death, so the reader has to infer it
+`except: … record failure … raise` covers the crash you can catch. SIGKILL, an OOM kill and a
+container restart leave the row in `running` forever, which the UI renders as "still working" and
+the user eventually reads as "nothing found" — ADR-010's false negative by another route.
+`jobstore._stale()` reports a `running` job with no heartbeat past the job timeout as failed, and
+the message says only what is actually known: the worker stopped reporting. Note the ordering
+rule that goes with it — a row already `failed` is never overwritten by the owning pipeline's
+live status, because a killed worker's in-process state is frozen at `running` and would argue
+itself back to life.
+
+2026-08-16 · B3 · Prompt files must be *read* at import, not just *exist*
+Moving `prompts.py` → `prompts/` (ADR-019) is only half the job: if the loader falls back to `""`
+on a missing file, the model runs with no instructions and returns plausible output for the wrong
+task. `prompts.load()` raises instead. Same instinct as HR-3 — the silent version of this failure
+is much more expensive than the loud one.
+
 ---
 
 ## 5. Interface requests & blockers
@@ -249,7 +287,39 @@ so bind it as `lambda: build_review_runner(document_store)`. Build it through th
 rather than by hand: `prefilter=` is optional on `ReviewRunner` and omitting it costs
 nothing visible while multiplying the per-claim model spend. · 2026-08-16
 
-[OPEN] B1 → B3 · Persist the uploaded PDF to `{UPLOAD_DIR}/{doc_id}.pdf` ·
+[RESOLVED] B1 → B3 · Persist the uploaded PDF to `{UPLOAD_DIR}/{doc_id}.pdf` · Done in
+`f72381e`. `documents.py::upload` writes the bytes to `{UPLOAD_DIR}/{doc_id}.pdf` **before**
+enqueueing, and the path goes onto the `agent_jobs` row, so a crashed ingest is retryable. A
+write failure is a 507 and the upload is refused — accepting a paper and returning a job id we
+cannot honour would be the most misleading available answer. `upload_dir` is now a required
+dependency: unconfigured, the route 503s naming it rather than parsing from memory.
+· 2026-08-16
+
+[OPEN] B3 → F1 · Two API changes the edit console must follow · **(1) Approval now requires
+`base_version`** (ADR-021). `POST /api/change-sets/{id}/approve` takes
+`{base_version, approved_change_ids, rejected_change_ids, orphan_decisions}`; send back the
+`base_version` from the proposal you rendered. Omitting it is a 422. If the head moved since the
+proposal, you get a **409 `{"error": "version_conflict", "current_version": N, ...}`** — re-issue
+the command against `current_version` and re-render; do not retry the approval, nothing was
+written. Note there are now two distinct 409s on that endpoint: `version_conflict` (re-plan) and
+`approval_invalid` (an orphaned anchor is still undecided — the user must choose).
+**(2) `POST /api/documents/{id}/commands` renamed `version` → `base_version`**; `version` still
+validates as an alias so nothing breaks today, but move over. Also new and useful to you:
+`GET /api/jobs/{job_id}` and `GET /api/documents/{doc_id}/jobs` return a uniform
+`{status: queued|running|succeeded|failed, progress_current, progress_total, error}` for both
+ingest and review — **a worker that died reports `failed` with a reason there**, and that is the
+state the review screen must render instead of an endless spinner (ADR-022, HR-3). · 2026-08-16
+
+[OPEN] B3 → B1 · `OrphanOption.fingerprint_id` is passed through but never re-embedded ·
+When a user *moves* an orphaned anchor to a span they chose, the anchor keeps the
+`fingerprint_id` it was recorded against (ADR-017 — fingerprints are immutable and the user's
+decision does not rewrite the anchor's history). That is right for provenance, but it means a
+later transform will score that anchor against its *original* sentence rather than the one it now
+lives in. Correct behaviour is arguable and it is a contract question, not an implementation one:
+if a user-directed move should re-record context, that needs a line in ADR-017 saying so. Flagged
+rather than silently decided. · 2026-08-16
+
+[SUPERSEDED — see RESOLVED above] B1 → B3 · Persist the uploaded PDF to `{UPLOAD_DIR}/{doc_id}.pdf` ·
 `app/api/routes/documents.py::upload` reads the payload into memory and hands it to
 `ingest.enqueue()`, but never writes it to disk, so ADR-022's "uploads on a local volume with the
 path recorded in Postgres" is not true and CP-1's upload criterion cannot be ticked. A crashed
@@ -367,6 +437,50 @@ CP-3 · B1 · 2026-08-16 — **complete.**
 | Shortlist present in `packages/csl-styles/` | six files: `apa.csl`, `ieee.csl`, `acm-sig-proceedings.csl`, `nature.csl`, `chicago-author-date.csl`, `vancouver.csl`; `test_export.py::test_all_six_shortlisted_styles_are_present_and_readable` |
 | Winning style + **numeric score** exposed via API | `GET /documents/{doc_id}/style` (B3's route) returns B1's `StyleService.detect()` payload: `style_id`, `score`, `similarity`, `margin`, per-candidate distances, and `reason` |
 | Top two within 0.05 → `ambiguous`, user picks | `test_style.py::test_top_two_within_the_margin_returns_ambiguous` — `style_id` is `None` and the user's choice overrides via `select()`. The margin is `STYLE_AMBIGUOUS_DELTA` from config; `detect_style` has no default for it. |
+
+CP-6 · B3 · 2026-08-16 — **complete in code; no live model call has been made.**
+
+`cd services/api && uv run pytest tests/unit/b3 -q` → `129 passed in 0.53s`
+(`test_kernel_adversarial` 31, `test_api` 22, `test_executor` 22, `test_loop_and_versioning` 21,
+`test_transform` 18, `test_jobs_and_locking` 15)
+`uv run ruff check app tests` → `All checks passed!`
+`uv run mypy app/agent app/api` → `Success: no issues found in 26 source files`
+Full backend suite: `uv run pytest tests/unit -q` → `597 passed in 16.7s`
+
+| Criterion | Evidence |
+|---|---|
+| Planner emits `EditPlan` as structured output only — no prose, no raw text edits | `planner.py::edit_plan_schema()` has no free-text field, no `text`, no `source_id`, no `csl`; the schema goes straight to `LLMClient.complete(role=PLAN, …)`. `test_loop_and_versioning.py` — a plan that is not an `EditPlan` raises `PlanningError` rather than being coerced. |
+| All seven operations implemented | `test_executor.py` — 22 passed, each operation asserted *through the kernel*, because an operation whose output the kernel rejects is written rather than implemented |
+| `FreeformEdit` requires `no_typed_op_applies` + justification; firing rate logged | `test_loop_and_versioning.py::test_an_ungated_freeform_plan_is_refused_and_explained` (ungated → rejected, reason returned to the planner) and `::test_the_freeform_firing_rate_is_recorded`. Exposed at `GET /api/agent/metrics`, with `tripped` set above ADR-009's ~20%; the log line names the recent justifications. |
+| Kernel is **pure code with no LLM call**, REJECT sharply separated from FLAG | `test_kernel_adversarial.py` — 31 passed, including an AST check (not a text grep) that `kernel.py` contains no `await`/`async def`, imports no HTTP or model SDK, and takes exactly `RenderProbe` and `SourceReader` from ports. All five REJECT rules and all three FLAG rules covered; `test_reject_beats_flag` proves a change that is both invalid and uncertain rejects. `KernelVerdict.reasons` is asserted non-empty for every reject and flag. |
+| Detach → transform → reattach; the text model never receives citation markers | `test_transform.py::test_the_text_model_never_sees_a_citation_marker` inspects what the fake model was actually shown. `MarkerLeakError` refuses to *send* prose containing a marker, and marker-shaped output coming back is stripped and reported rather than tolerated. |
+| Anchors below the threshold produce a user decision, never a deletion | `test_transform.py::test_below_the_floor_nothing_is_proposed_and_the_user_decides` — the near-miss span is retained so "keep it here" is an option the user can take. Kernel REJECT rule 2 fires if an unplaced anchor is neither reattached nor surfaced, and `versioning._check_orphans_resolved` blocks the commit until every orphan is decided — it defaults to neither "keep" nor "remove". |
+| REJECT returns the reason to the planner, max 2 retries, then surfaces | `test_loop_and_versioning.py::test_a_rejection_is_handed_back_to_the_planner_with_its_reason` (the kernel's exact string appears in the retry prompt) and `::test_retries_stop_at_two_and_the_reason_survives` — 3 attempts total, `status="failed"`, reasons intact, nothing applied |
+| Every approved change set commits a new IR version; every version revertible | `test_loop_and_versioning.py::test_approving_a_change_commits_a_new_revertible_version`; revert appends a new version rather than mutating, so a revert is itself revertible. The kernel re-runs at commit time against the document as it actually is, because approving a subset produces a different document than the one first judged. |
+| **Optimistic locking** — `base_version` on commands and approvals; a moved head fails and re-plans | `test_jobs_and_locking.py` — 15 passed. Checked three times: against the change set, against the live head, and inside B1's store at the write (`IRVersionConflict`). The 409 carries `current_version` so the UI can act on it; `test_the_conflict_reaches_the_client_as_a_409_carrying_the_new_head` asserts nothing was written. `base_version` is **required** on approval — optional would mean "land it on whatever the head happens to be". |
+| Reattachment uses `LLMClient.embed()` fingerprints from the side table; thresholds from config | `test_transform.py::test_the_vector_goes_to_the_side_table_and_the_ir_gets_an_id` and `::test_an_anchor_that_already_has_a_fingerprint_is_not_re_embedded`. `test_api.py::test_no_model_id_or_sdk_import_appears_anywhere_in_b3` greps all of `app/agent/` and `app/api/` for model IDs and SDK imports → none. `ReattachmentBand.from_settings()` is the only reader of the two thresholds; `grep -rn "0\.72\|0\.82\|0\.55" app/agent app/api` → 0 hits. |
+
+Also true this pass, and not previously:
+- **ADR-015/016/018** — the planner is role `PLAN`, the rewriter role `TRANSFORM`, embeddings go
+  through `LLMClient.embed()`. The Anthropic and Voyage clients in `app/api/models.py` are gone,
+  as is the local hashing embedder — it did not fail visibly, it just pushed anchors into the
+  flag and surface bands until the user learned to click through citation prompts.
+- **ADR-019** — six prompt files under `app/agent/prompts/`; the loader raises on a missing file.
+- **ADR-022** — `agent_jobs` with status/error/progress, `GET /api/jobs/{job_id}`, and a
+  stopped-reporting job surfaced as failed.
+
+Stated rather than discovered — what is **not** proven here:
+- **No live or recorded model call has been made through roles `PLAN` or `TRANSFORM`.** Every test
+  runs against scripted fakes, and there are no `LLM_MODE=record` recordings for B3 yet. The
+  kernel's guarantees are model-independent by construction and are genuinely tested; the
+  *planner's judgement* — whether it picks the right typed operation for a real command, and what
+  the real `FreeformEdit` firing rate is — is unmeasured. That measurement is CP-8's, and the
+  ADR-009 tripwire cannot fire on a rate of zero commands.
+- Reattachment quality is measured with a bag-of-words embedder chosen so the tests are
+  deterministic, not with `text-embedding-3-small`. `REATTACH_ACCEPT = 0.72` is ADR-024's
+  hypothesis and remains unswept; CP-8 owns that.
+- `arq` is wired and its entry points record job status, but B1's ingest and B2's review currently
+  run in-process via `asyncio.create_task`, so the worker path is not the one exercised today.
 
 ---
 
