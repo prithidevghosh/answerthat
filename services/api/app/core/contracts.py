@@ -39,7 +39,10 @@ class CitationAnchor(BaseModel):
     original_marker_text: str | None = None
     provenance_kind: Literal["parsed", "agent_added"] = "parsed"
     confidence: float = 1.0
-    context_fingerprint: list[float] | None = None # embedding of host sentence, for reattachment
+    fingerprint_id: str | None = None              # FK → anchor_fingerprints table (ADR-017).
+                                                   # Vectors are NEVER stored inline: they would
+                                                   # duplicate per version and make structural
+                                                   # diffs unreadable.
     locator: str | None = None
     prefix: str | None = None
 
@@ -161,3 +164,36 @@ class Provider(Protocol):
     async def match_reference(self, title: str, year: int | None = None) -> SourceRecord | None: ...
     async def get_abstract(self, source_id: str) -> tuple[str | None, AbstractSource]: ...
     async def batch_hydrate(self, ids: list[str]) -> list[SourceRecord]: ...
+
+# ---------- LLM (ADR-015 / 016 / 018) ----------
+class LLMRole(str, Enum):
+    """Model is chosen per ROLE, never globally. IDs pinned in config.py — no model
+    string appears anywhere else in the codebase."""
+    REPAIR = "repair"                  # gpt-5.4-mini  — reference segment-and-label
+    CLAIM_EXTRACTION = "claim_extraction"  # gpt-5.4
+    RERANK = "rerank"                  # gpt-5.4-mini  — after the embedding prefilter
+    VERIFY = "verify"                  # gpt-5.5       — accuracy-critical, do not economise
+    PLAN = "plan"                      # gpt-5.5
+    TRANSFORM = "transform"            # gpt-5.4       — rewriting the user's prose
+
+class LLMClient(Protocol):
+    """The ONLY path to OpenAI. Structured output is mandatory for every data-returning
+    call — JSON Schema, not prompt-and-parse. Honours LLM_MODE=record|replay|live;
+    in replay a cache miss RAISES rather than calling the API (ADR-018)."""
+    async def complete(
+        self, role: LLMRole, prompt: str, schema: dict, *, system: str | None = None
+    ) -> dict: ...
+    async def embed(self, texts: list[str]) -> list[list[float]]: ...   # 3-small @ 512 dims
+
+class JobStatus(str, Enum):
+    QUEUED = "queued"; RUNNING = "running"; SUCCEEDED = "succeeded"; FAILED = "failed"
+
+class Job(BaseModel):
+    """A crashed worker is a FAILURE and must be visible. A UI streaming nothing forever
+    reads as 'no findings' — the same false negative as ADR-010. HR-3."""
+    job_id: str
+    kind: Literal["ingest", "review"]
+    status: JobStatus
+    progress_current: int = 0
+    progress_total: int = 0
+    error: str | None = None
