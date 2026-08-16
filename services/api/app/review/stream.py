@@ -43,6 +43,7 @@ from app.core.contracts import (
 )
 from app.review.candidates import CandidateGenerator, DocumentContext
 from app.review.claims import ClaimExtractor
+from app.review.prefilter import EmbeddingPrefilter
 from app.review.rerank import Reranker
 from app.review.verifier import Verifier
 
@@ -79,14 +80,17 @@ class ReviewStats:
 
     __slots__ = (
         "claims_total", "claims_verified", "findings_emitted",
-        "candidates_considered", "candidates_rejected", "quote_check_failures",
-        "unverifiable_no_abstract", "claims_without_candidates",
+        "candidates_prefiltered", "candidates_considered", "candidates_rejected",
+        "quote_check_failures", "unverifiable_no_abstract", "claims_without_candidates",
     )
 
     def __init__(self) -> None:
         self.claims_total = 0
         self.claims_verified = 0
         self.findings_emitted = 0
+        # Survived the embedding prefilter; `candidates_considered` is the narrower set
+        # that survived the reranker and cost a verifier call.
+        self.candidates_prefiltered = 0
         self.candidates_considered = 0
         self.candidates_rejected = 0
         self.quote_check_failures = 0
@@ -109,12 +113,16 @@ class ReviewRunner:
         candidates: CandidateGenerator,
         reranker: Reranker,
         verifier: Verifier,
+        prefilter: EmbeddingPrefilter | None = None,
         check_existing_anchors: bool = True,
     ) -> None:
         self.documents = document_store
         self.store = source_store
         self.extractor = extractor
         self.candidates = candidates
+        # The cascade's first stage (ADR-015). Optional only so a caller that has already
+        # narrowed its candidates can skip it; the review pipeline always supplies one.
+        self.prefilter = prefilter
         self.reranker = reranker
         self.verifier = verifier
         # The second caller of the one verifier (ADR-006): pointed at existing anchors
@@ -149,7 +157,9 @@ class ReviewRunner:
         await self.candidates.prepare(context)
 
         for claim in claims:
-            async for event in self._review_claim(claim, context, anchor_sources, stats):
+            async for event in self._review_claim(
+                claim, context, anchor_sources, stats, doc_id=doc_id
+            ):
                 yield event
             stats.claims_verified += 1
             yield ("progress", {"phase": "claim_verified", **stats.as_dict()})
@@ -164,9 +174,11 @@ class ReviewRunner:
         context: DocumentContext,
         anchor_sources: dict[str, list[str]],
         stats: ReviewStats,
+        *,
+        doc_id: str = "",
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         if self.check_existing_anchors:
-            async for event in self._check_anchors(claim, anchor_sources, stats):
+            async for event in self._check_anchors(claim, anchor_sources, stats, doc_id=doc_id):
                 yield event
 
         candidates = await self.candidates.generate(claim, context)
@@ -186,8 +198,24 @@ class ReviewRunner:
             return
 
         records = await self._records_for([c.source_id for c in candidates])
+
+        # The cascade (ADR-015). Embeddings are free and local, so they run first and cut
+        # the field to RERANK_KEEP; the mini reranker then cuts to VERIFY_KEEP; only
+        # those reach the verifier. Skipping the prefilter would not change what a finding
+        # has to prove — it would just make the verifier the volume stage, which is the
+        # one place cost pressure turns into a worse verdict.
+        if self.prefilter is not None:
+            candidates = await self.prefilter.select(
+                claim, candidates, records, snippets=self.candidates.snippets_by_source
+            )
+            stats.candidates_prefiltered += len(candidates)
+
         shortlist = await self.reranker.rerank(
-            claim, candidates, records, snippets=self.candidates.snippets_by_source
+            claim,
+            candidates,
+            records,
+            snippets=self.candidates.snippets_by_source,
+            doc_id=doc_id,
         )
         stats.candidates_considered += len(shortlist)
 
@@ -195,7 +223,7 @@ class ReviewRunner:
         # provider limiter already serialises the part that has to be serialised.
         outcomes = await asyncio.gather(
             *(
-                self.verifier.verify_detailed(claim.text, records[c.source_id])
+                self.verifier.verify_detailed(claim.text, records[c.source_id], doc_id=doc_id)
                 for c in shortlist
                 if c.source_id in records
             )
@@ -236,7 +264,12 @@ class ReviewRunner:
             }))
 
     async def _check_anchors(
-        self, claim: Claim, anchor_sources: dict[str, list[str]], stats: ReviewStats
+        self,
+        claim: Claim,
+        anchor_sources: dict[str, list[str]],
+        stats: ReviewStats,
+        *,
+        doc_id: str = "",
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """The verifier's second caller: does the cited source support this claim?"""
         source_ids = [
@@ -251,7 +284,7 @@ class ReviewRunner:
             record = records.get(source_id)
             if record is None:
                 continue
-            outcome = await self.verifier.verify_detailed(claim.text, record)
+            outcome = await self.verifier.verify_detailed(claim.text, record, doc_id=doc_id)
             if outcome.quote_check_failed:
                 stats.quote_check_failures += 1
                 continue

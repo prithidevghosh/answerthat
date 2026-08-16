@@ -1,151 +1,104 @@
-"""The single Anthropic call site for the review pipeline.
+"""The review pipeline's model access. ADR-015.
 
-Three rules, all of them HR-3 in one form or another:
+**There is no model SDK in this file, and there must never be one.** Every call goes
+through `app/core/llm.py`, which is the only place an OpenAI client is constructed. Four
+properties live there and none of them survives a second call site:
 
-* **The key is required at the point of use.** `ANTHROPIC_API_KEY` is not one of
-  HR-2's two startup keys, so its absence does not abort the app — but claim
-  extraction, reranking and verification must not silently skip when it is missing.
-  They raise `MissingAPIKeyError` instead (see memory.md §4, B1's note).
-* **Structured output only.** Every call passes a JSON schema through
-  `output_config.format`, so the model cannot answer with prose. A verifier that can
-  return an essay is a verifier whose output has to be parsed with a regex.
-* **A refusal is raised, not defaulted.** `stop_reason: "refusal"` and truncation both
-  raise. Returning an empty verdict here would read downstream as
-  "does_not_address" — a confident negative produced by a failure.
+* **per-role model routing** — this package declares `CLAIM_EXTRACTION`, `RERANK` and
+  `VERIFY`, and `config.py` alone maps those to models. No model ID appears in
+  `app/review/` at all, not even in a comment; a module that names one has already broken
+  ADR-015 whether or not it happens to name the right one.
+* **mandatory JSON-Schema structured output** — the verifier cannot answer with an essay.
+* **record/replay** (ADR-018) — CI runs with zero live calls, and a cache miss raises.
+* **the per-document token budget** — which is why `doc_id` is threaded through every call
+  here rather than left for the caller to remember.
 
-Nothing in this module retries into a default value. The Anthropic SDK's own retry
-policy handles transient 429/5xx; anything past it propagates.
+The cost control for this pipeline is the **cascade**, not a cheaper verifier. An
+embedding prefilter (free, local, `embed()`) cuts candidates to `RERANK_KEEP`; the mini
+model behind `RERANK` reranks those; only `VERIFY_KEEP` reach `VERIFY`. Verification is
+the judgment the product's honesty rests on and is not the place to economise — see
+ADR-015's table for which model each role resolves to and why.
+
+Nothing here retries into a default value. A refusal, a truncation, or a schema failure
+propagates as an exception from `app/core/llm.py`, because a review that swallowed one
+would report fewer findings and read as a cleaner paper (HR-3).
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from anthropic import AsyncAnthropic
-from anthropic.types import Message
-from anthropic.types.output_config_param import OutputConfigParam
+from app.core.contracts import LLMRole
 
-from app.core.contracts import MissingAPIKeyError
-
-__all__ = ["StructuredLLM", "LLMRefusal", "LLMTruncated", "DEFAULT_MODEL", "object_schema"]
-
-#: The review pipeline's model. Claim extraction, reranking and verification are all
-#: judgement tasks where a wrong answer is a wrong finding shown to a researcher.
-DEFAULT_MODEL = "claude-opus-5"
+__all__ = ["ReviewLLM", "object_schema"]
 
 
-class LLMRefusal(RuntimeError):
-    """The model declined the request. Surfaced, never converted into a verdict."""
+class ReviewLLM:
+    """Role-routed structured-output calls for claim extraction, rerank and verification.
 
-
-class LLMTruncated(RuntimeError):
-    """The response hit `max_tokens` before the JSON was complete.
-
-    Raised rather than salvaged: half a JSON object parsed leniently is how a
-    partial claim list becomes a complete-looking review.
+    A thin adapter over the shared `LLMClient`, not a client of its own. It exists so the
+    three review services state their role at the call site — the role is what selects the
+    model, and reading `LLMRole.VERIFY` next to the verifier's prompt is how "we did not
+    economise on verification" stays true through later edits.
     """
 
+    def __init__(self, client: Any = None, *, settings: Any = None, doc_id: str = "") -> None:
+        if client is None:
+            from app.core.llm import get_llm_client  # noqa: PLC0415
 
-class StructuredLLM:
-    """Async Anthropic client constrained to JSON-schema responses."""
+            client = get_llm_client(settings)
+        self._client = client
+        #: Charged against the per-document token budget (ADR-015). Empty means the
+        #: caller is outside a document context — a test, or the edit path's ad-hoc
+        #: verification — and no budget is charged.
+        self.doc_id = doc_id
+        self.calls_by_role: dict[str, int] = {}
 
-    def __init__(
-        self,
-        *,
-        api_key: str | None,
-        model: str = DEFAULT_MODEL,
-        effort: str = "high",
-        client: AsyncAnthropic | None = None,
-    ) -> None:
-        key = (api_key or "").strip()
-        if not key and client is None:
-            raise MissingAPIKeyError(
-                "\nANTHROPIC_API_KEY is missing or empty.\n"
-                "           https://console.anthropic.com/settings/keys\n\n"
-                "Claim extraction, reranking and verification all need it. This raises "
-                "rather than skipping those steps, because a review that silently ran "
-                "without a verifier would report no findings — indistinguishable from a "
-                "paper with nothing missing (HR-3).\n"
-            )
-        self.model = model
-        self.effort = effort
-        self._client = client or AsyncAnthropic(api_key=key)
-        self.calls = 0
-        self.input_tokens = 0
-        self.output_tokens = 0
+    def for_document(self, doc_id: str) -> ReviewLLM:
+        """A view of this client that charges its tokens to `doc_id`.
+
+        Shares the underlying client, so the budget, the recorder and the counters stay
+        process-wide; only the attribution changes.
+        """
+        scoped = ReviewLLM(self._client, doc_id=doc_id)
+        scoped.calls_by_role = self.calls_by_role
+        return scoped
 
     async def complete_json(
         self,
         *,
+        role: LLMRole,
         system: str,
         prompt: str,
         schema: dict[str, Any],
-        max_tokens: int = 8000,
+        doc_id: str | None = None,
     ) -> dict[str, Any]:
-        """Return the model's answer as a dict conforming to `schema`.
-
-        `max_tokens` bounds thinking *and* answer together, so it is set generously —
-        a truncated structured response raises rather than returning partial data.
-        """
-        # Typed as the SDK's param rather than inferred: a bare dict literal widens to
-        # `dict[str, Collection[str]]` and stops matching the `create` overloads.
-        output_config: OutputConfigParam = {
-            "effort": self.effort,  # type: ignore[typeddict-item]
-            "format": {"type": "json_schema", "schema": schema},
-        }
-        response: Message = await self._client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
+        """One structured-output call. Returns the parsed object, never raw text."""
+        self.calls_by_role[role.value] = self.calls_by_role.get(role.value, 0) + 1
+        payload = await self._client.complete(
+            role,
+            prompt,
+            schema,
             system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_config=output_config,
+            doc_id=self.doc_id if doc_id is None else doc_id,
         )
-
-        self.calls += 1
-        if response.usage:
-            self.input_tokens += response.usage.input_tokens or 0
-            self.output_tokens += response.usage.output_tokens or 0
-
-        if response.stop_reason == "refusal":
-            details = getattr(response, "stop_details", None)
-            raise LLMRefusal(
-                f"the model declined this request (category: "
-                f"{getattr(details, 'category', None)}). Surfacing rather than "
-                "returning an empty result."
-            )
-        if response.stop_reason == "max_tokens":
-            raise LLMTruncated(
-                f"response hit max_tokens ({max_tokens}) before the JSON was complete. "
-                "Raising rather than parsing a partial object."
-            )
-
-        text = "".join(block.text for block in response.content if block.type == "text")
-        if not text.strip():
-            raise LLMTruncated(
-                "the model returned no text content. Raising rather than treating an "
-                "empty response as an empty result."
-            )
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
-            # Should be impossible under output_config.format; if the schema contract
-            # ever breaks we want to know, not to fall back to a regex.
-            raise LLMTruncated(
-                f"structured output was not valid JSON despite a schema: {exc}"
-            ) from exc
         if not isinstance(payload, dict):
-            raise LLMTruncated(f"structured output was {type(payload).__name__}, not an object")
+            # Should be impossible under a strict object schema. If the contract ever
+            # breaks we want to know here, not to coerce it into something usable.
+            raise TypeError(
+                f"role {role.value} returned {type(payload).__name__} despite a strict "
+                "JSON schema; refusing to interpret it."
+            )
         return payload
 
-    def snapshot(self) -> dict[str, int | str]:
-        return {
-            "model": self.model,
-            "effort": self.effort,
-            "calls": self.calls,
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-        }
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Sentence embeddings at 512 dimensions (ADR-016), for the rerank prefilter."""
+        if not texts:
+            return []
+        return await self._client.embed(texts)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {"doc_id": self.doc_id, "calls_by_role": dict(self.calls_by_role)}
 
 
 def object_schema(
@@ -153,9 +106,9 @@ def object_schema(
 ) -> dict[str, Any]:
     """Build a structured-output-compatible object schema.
 
-    Structured outputs require `additionalProperties: false` on every object and an
-    explicit `required` list; forgetting either is a 400 at request time rather than a
-    silently looser schema.
+    Strict structured output requires `additionalProperties: false` on every object and an
+    explicit `required` list naming every property; forgetting either is a 400 at request
+    time rather than a silently looser schema.
     """
     return {
         "type": "object",

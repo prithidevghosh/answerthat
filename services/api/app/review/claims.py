@@ -28,12 +28,13 @@ import re
 import unicodedata
 from typing import Any
 
-from app.core.contracts import Claim, Document, Section, Span
-from app.review.llm import StructuredLLM, object_schema
+from app.core.contracts import Claim, Document, LLMRole, Section, Span
+from app.review.llm import ReviewLLM, object_schema
+from app.review.prompts import CLAIM_EXTRACTION_SYSTEM
 
 __all__ = [
     "ClaimExtractor",
-    "CLAIM_SYSTEM_PROMPT",
+    "CLAIM_EXTRACTION_SYSTEM",
     "normalize_for_compare",
     "get_claim_extractor",
 ]
@@ -49,36 +50,6 @@ def normalize_for_compare(text: str) -> str:
         folded = folded.replace(fancy, plain)
     return _WS.sub(" ", folded).strip()
 
-
-CLAIM_SYSTEM_PROMPT = """\
-You decompose academic prose into atomic, citable claims for a peer-review system.
-
-An atomic claim is a single assertion that could, on its own, be supported or \
-contradicted by a specific piece of prior work. Split compound sentences into separate \
-claims. Do not merge, paraphrase, summarise, or rewrite — you are selecting spans of the \
-author's own text, character by character.
-
-For each claim you return `char_start` and `char_end` (0-indexed, end-exclusive) into the \
-span text you were given, plus `quote`: the exact substring those offsets select, copied \
-character for character. If your quote and your offsets disagree, the claim is discarded, \
-so count carefully.
-
-Score each claim's `citability` from 0.0 to 1.0 — how much the claim depends on prior \
-work being cited:
-
-  1.0  A specific empirical or quantitative assertion about the world or prior results
-       ("Transformers outperform LSTMs on long-sequence benchmarks").
-  0.8  A general factual claim about the state of a field ("Attention mechanisms are
-       now standard in sequence modelling").
-  0.5  A motivating or comparative statement that leans on unstated prior work
-       ("Existing approaches scale poorly").
-  0.2  A claim about the authors' own contribution or results in this paper.
-  0.0  Discourse, structure, or method description with no external claim at all
-       ("In this section we describe our experimental setup", "Let x denote the input").
-
-Return only claims with citability above 0.0. Returning nothing for a span is a correct \
-answer when the span is purely methodological or structural.
-"""
 
 CLAIM_SCHEMA = object_schema(
     {
@@ -104,10 +75,16 @@ CLAIM_SCHEMA = object_schema(
 class ClaimExtractor:
     """Turns a `Document` (or a subset of it) into claims ordered by citability."""
 
-    def __init__(self, *, llm: StructuredLLM, min_citability: float = 0.15) -> None:
+    def __init__(self, *, llm: ReviewLLM, min_citability: float | None = None) -> None:
         self.llm = llm
-        # Below this, a "claim" is the authors describing their own paper. Reviewing it
-        # against the literature produces noise, not findings.
+        # CITABILITY_MIN (ADR-024). Below it, a "claim" is the authors describing their
+        # own paper, and reviewing it against the literature produces noise rather than
+        # findings. Read from config rather than inlined: T1 sweeps this against the
+        # golden set, which is only possible if it has a name.
+        if min_citability is None:
+            from app.core.config import get_settings  # noqa: PLC0415
+
+            min_citability = get_settings().citability_min
         self.min_citability = min_citability
         self.discarded_offset_mismatch = 0
         self.discarded_below_threshold = 0
@@ -126,7 +103,9 @@ class ClaimExtractor:
         for section_title, spans in selected:
             if not spans:
                 continue
-            claims.extend(await self._extract_from_spans(section_title, spans))
+            claims.extend(
+                await self._extract_from_spans(section_title, spans, doc_id=document.doc_id)
+            )
 
         # Descending citability *is* the streaming order (ADR-014). Ties break on
         # claim_id so the order is stable across runs and the demo is reproducible.
@@ -134,15 +113,16 @@ class ClaimExtractor:
         return claims
 
     async def _extract_from_spans(
-        self, section_title: str, spans: list[Span]
+        self, section_title: str, spans: list[Span], *, doc_id: str = ""
     ) -> list[Claim]:
         by_id = {span.id: span for span in spans}
         prompt = _build_prompt(section_title, spans)
         payload = await self.llm.complete_json(
-            system=CLAIM_SYSTEM_PROMPT,
+            role=LLMRole.CLAIM_EXTRACTION,
+            system=CLAIM_EXTRACTION_SYSTEM,
             prompt=prompt,
             schema=CLAIM_SCHEMA,
-            max_tokens=16000,
+            doc_id=doc_id,
         )
 
         claims: list[Claim] = []
@@ -262,8 +242,8 @@ def get_claim_extractor(settings: Any = None) -> ClaimExtractor:
     """Process-wide claim extractor — the `ClaimExtractor` port B3's edit path calls.
 
     Defined here rather than in `composition.py` because B3's Interface Request names
-    this module path. It shares the one `StructuredLLM`, so token accounting stays in
-    one place.
+    this module path. It shares the one LLM client, so per-role routing, record/replay
+    and the token budget stay in one place (ADR-015).
     """
     global _extractor
     if _extractor is None:

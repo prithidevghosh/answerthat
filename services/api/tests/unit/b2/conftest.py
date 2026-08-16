@@ -23,7 +23,34 @@ from app.providers.source_store import InMemorySourceStore
 
 FAKE_S2_KEY = "test-s2-key"
 FAKE_OPENALEX_KEY = "test-openalex-key"
+FAKE_OPENAI_KEY = "test-openai-key"
 FAKE_MAILTO = "tests@answerthat.local"
+
+
+@pytest.fixture(autouse=True)
+def fake_credentials(monkeypatch) -> None:
+    """Every required key present, all of them fake. HR-2 / ADR-010.
+
+    Thresholds are read from `Settings` at construction — `CITABILITY_MIN`, `RERANK_KEEP`,
+    `VERIFY_KEEP` (ADR-024) — and `Settings` refuses to exist without all three keys. So
+    the suite supplies keys rather than relaxing the check, which is the same trade the
+    provider tests make with their stubbed transports: fake the credential, never the
+    enforcement.
+
+    `LLM_MODE=replay` on top, so a test that reached a real model call fails on a missing
+    recording instead of quietly billing someone (ADR-018).
+    """
+    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", FAKE_S2_KEY)
+    monkeypatch.setenv("OPENALEX_API_KEY", FAKE_OPENALEX_KEY)
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_OPENAI_KEY)
+    monkeypatch.setenv("OPENALEX_MAILTO", FAKE_MAILTO)
+    monkeypatch.setenv("LLM_MODE", "replay")
+
+    from app.core.config import reset_settings_cache
+
+    reset_settings_cache()
+    yield
+    reset_settings_cache()
 
 
 class RecordingTransport(httpx.MockTransport):

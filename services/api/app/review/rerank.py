@@ -11,6 +11,12 @@ candidates are worth spending an abstract fetch and a verifier call on; the veri
 then has to produce a verbatim quote or the finding dies (ADR-006). Scores here never
 appear in a finding on their own.
 
+It is the middle stage of the cascade (ADR-015), and the middle is where it belongs: the
+embedding prefilter has already cut the field to `RERANK_KEEP` for free, so this call —
+the highest-volume model call in the system, claims × candidates, which is why its role
+routes to a mini model — sees a shortlist rather than everything three strategies
+returned, and passes `VERIFY_KEEP` of them on to the verifier.
+
 One call per claim, all candidates in it — per-candidate calls would multiply latency
 for a judgement the model makes better with the alternatives side by side. Scores for
 `source_id`s that were not in the input are discarded: the model ranks what it was
@@ -19,33 +25,11 @@ given and cannot introduce a source.
 
 from __future__ import annotations
 
-from app.core.contracts import Candidate, Claim, SourceRecord
-from app.review.llm import StructuredLLM, object_schema
+from app.core.contracts import Candidate, Claim, LLMRole, SourceRecord
+from app.review.llm import ReviewLLM, object_schema
+from app.review.prompts import RERANK_SYSTEM
 
-__all__ = ["Reranker", "RERANK_SYSTEM_PROMPT"]
-
-RERANK_SYSTEM_PROMPT = """\
-You are triaging retrieved papers for an academic peer-review system.
-
-You are given one claim from a manuscript and a numbered list of candidate papers. For \
-each candidate, score how directly it bears on *this specific claim* — not how relevant \
-it is to the general topic, and not how important the paper is in its field.
-
-  1.0  Directly addresses this claim: reports, tests, supports, or contradicts it.
-  0.7  Addresses a close variant of the claim, or reports the same finding in an
-       adjacent setting.
-  0.4  Same subject area and would plausibly be cited nearby, but does not speak to
-       this claim.
-  0.1  Topically related only. A reader would not expect this citation here.
-  0.0  Unrelated, or you cannot tell from the metadata given.
-
-A well-known paper that does not address the claim scores low. A minor paper that tests \
-exactly this claim scores high. Score only the candidates listed; do not add any.
-
-`why` is one short sentence naming what in the candidate connects it to the claim, or \
-what is missing. It is triage reasoning, not evidence — the verification step will \
-require a verbatim quote before anything is shown to the researcher.
-"""
+__all__ = ["Reranker", "RERANK_SYSTEM"]
 
 RERANK_SCHEMA = object_schema(
     {
@@ -68,12 +52,17 @@ _ABSTRACT_PREVIEW = 900
 
 
 class Reranker:
-    def __init__(self, *, llm: StructuredLLM, keep_top: int = 5) -> None:
+    def __init__(self, *, llm: ReviewLLM, keep_top: int | None = None) -> None:
         self.llm = llm
-        # Only this many candidates per claim go on to verification. Verification costs
-        # an abstract fetch (rate-limited) plus a model call, so the cap is a real
-        # budget decision — and it is reported in the progress counters rather than
-        # hidden, so "we checked the top N" is visible rather than implied.
+        # VERIFY_KEEP (ADR-024). Only this many candidates per claim go on to the
+        # verifier, and each one costs a rate-limited abstract fetch plus a call to the
+        # strongest model we route to. This is the last step of the cascade — prefilter
+        # to RERANK_KEEP, rerank to VERIFY_KEEP — and the cap is reported in the progress
+        # counters rather than hidden, so "we checked the top N" is visible, not implied.
+        if keep_top is None:
+            from app.core.config import get_settings  # noqa: PLC0415
+
+            keep_top = get_settings().verify_keep
         self.keep_top = keep_top
         self.discarded_unknown_source = 0
 
@@ -84,6 +73,7 @@ class Reranker:
         records: dict[str, SourceRecord],
         *,
         snippets: dict[str, str] | None = None,
+        doc_id: str = "",
     ) -> list[Candidate]:
         """Score candidates against the claim and return the top `keep_top`.
 
@@ -95,10 +85,11 @@ class Reranker:
 
         prompt = _build_prompt(claim, candidates, records, snippets or {})
         payload = await self.llm.complete_json(
-            system=RERANK_SYSTEM_PROMPT,
+            role=LLMRole.RERANK,
+            system=RERANK_SYSTEM,
             prompt=prompt,
             schema=RERANK_SCHEMA,
-            max_tokens=8000,
+            doc_id=doc_id,
         )
 
         allowed = {candidate.source_id for candidate in candidates}

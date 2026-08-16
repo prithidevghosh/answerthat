@@ -16,7 +16,7 @@ from app.core.contracts import (
     Claim,
     Document,
     DocumentMeta,
-    MissingAPIKeyError,
+    LLMRole,
     Provenance,
     Section,
     SourceRecord,
@@ -26,7 +26,7 @@ from app.core.contracts import (
 from app.providers.abstracts import AbstractResolver
 from app.review.claims import ClaimExtractor
 from app.review.fusion import StrategyRanking, cited_keys_for, fuse_candidates
-from app.review.llm import DEFAULT_MODEL, StructuredLLM
+from app.review.llm import ReviewLLM
 from app.review.rerank import Reranker
 from app.review.stream import ReviewRunner
 from app.review.verifier import MIN_QUOTE_CHARS, Verifier, quote_is_present
@@ -42,24 +42,62 @@ ABSTRACT = (
 # --------------------------------------------------------------------------- fakes
 
 
-class FakeLLM(StructuredLLM):
-    """A StructuredLLM with the wire replaced, not the checks."""
+class FakeCoreClient:
+    """A stand-in for `app/core/llm.py`'s client — the wire replaced, not the layer.
 
-    def __init__(self, responses: list[dict]) -> None:
+    The real `ReviewLLM` sits on top of this, so these tests exercise the actual adapter:
+    the role each stage declares, the schema it passes, and the `doc_id` it charges. A
+    fake that replaced `ReviewLLM` itself would stop testing the one thing ADR-015 cares
+    about, which is that the review pipeline names a role rather than a model.
+    """
+
+    def __init__(self, responses: list[dict], *, vectors: list[list[float]] | None = None) -> None:
         self.responses = list(responses)
         self.prompts: list[str] = []
-        self.model = "fake"
-        self.effort = "high"
+        self.roles: list[LLMRole] = []
+        self.doc_ids: list[str] = []
+        self.schemas: list[dict] = []
         self.calls = 0
-        self.input_tokens = 0
-        self.output_tokens = 0
+        self.vectors = vectors
+        self.embedded: list[list[str]] = []
 
-    async def complete_json(self, *, system, prompt, schema, max_tokens=8000):
+    async def complete(self, role, prompt, schema, *, system=None, doc_id=""):
         self.prompts.append(prompt)
+        self.roles.append(role)
+        self.doc_ids.append(doc_id)
+        self.schemas.append(schema)
         self.calls += 1
         if not self.responses:
-            raise AssertionError("FakeLLM ran out of scripted responses")
+            raise AssertionError("FakeCoreClient ran out of scripted responses")
         return self.responses.pop(0)
+
+    async def embed(self, texts):
+        self.embedded.append(list(texts))
+        if self.vectors is not None:
+            return self.vectors[: len(texts)]
+        # Deterministic unit vectors, one dimension per call position. Enough for the
+        # prefilter's ordering to be assertable without pretending to be semantic.
+        return [[1.0 if i == j else 0.0 for j in range(len(texts))] for i in range(len(texts))]
+
+
+class FakeLLM(ReviewLLM):
+    """The real `ReviewLLM` over a faked core client, with the counters tests read."""
+
+    def __init__(self, responses: list[dict], *, vectors: list[list[float]] | None = None) -> None:
+        self.core = FakeCoreClient(responses, vectors=vectors)
+        super().__init__(self.core)
+
+    @property
+    def prompts(self) -> list[str]:
+        return self.core.prompts
+
+    @property
+    def roles(self) -> list[LLMRole]:
+        return self.core.roles
+
+    @property
+    def calls(self) -> int:
+        return self.core.calls
 
 
 class FakeAbstracts(AbstractResolver):
@@ -484,18 +522,83 @@ async def test_an_unscored_candidate_sorts_below_every_scored_one() -> None:
     assert [c.source_id for c in result] == ["src_b", "src_a"]
 
 
-# --------------------------------------------------------------------------- HR-3 / model
+# --------------------------------------------------------------------------- ADR-015
 
 
-def test_the_review_model_is_the_current_opus() -> None:
-    assert DEFAULT_MODEL == "claude-opus-5"
+async def test_each_stage_declares_its_role_so_config_can_choose_the_model() -> None:
+    """ADR-015. The review pipeline names a role; only `config.py` names a model.
+
+    This is the whole of ADR-015 in one assertion. Extraction, rerank and verification
+    have different accuracy stakes, and routing them to one model is wrong in both
+    directions — a frontier model for triage is waste, and a cheap model for entailment
+    is the one place a mistake becomes a false claim shown to a researcher as fact.
+    """
+    record = make_record("src_a", "A", doi="10.1/a", abstract=ABSTRACT)
+    claim = Claim(claim_id="clm_1", text="A claim.", span_id="spn_1", citability=0.9)
+
+    class _EmptyStore:
+        async def fetch(self, source_id):
+            return None
+
+    extractor_llm = FakeLLM([{"claims": []}])
+    await ClaimExtractor(llm=extractor_llm, min_citability=0.3).extract(
+        _doc_with("Attention mechanisms are now standard in sequence modelling."), []
+    )
+
+    rerank_llm = FakeLLM([{"scores": []}])
+    await Reranker(llm=rerank_llm, keep_top=3).rerank(
+        claim,
+        fuse_candidates([StrategyRanking("s2_snippet", [record])]),
+        {"src_a": record},
+    )
+
+    verify_llm = FakeLLM([{
+        "label": "supports",
+        "quote": "dispensing with recurrence and convolutions entirely",
+        "confidence": 0.9,
+    }])
+    await Verifier(
+        llm=verify_llm, abstracts=FakeAbstracts(ABSTRACT), source_store=_EmptyStore()
+    ).verify_detailed(claim.text, record)
+
+    assert extractor_llm.roles == [LLMRole.CLAIM_EXTRACTION]
+    assert rerank_llm.roles == [LLMRole.RERANK]
+    assert verify_llm.roles == [LLMRole.VERIFY]
 
 
-def test_a_missing_anthropic_key_raises_at_the_point_of_use() -> None:
-    """Not a startup key (HR-2 names two), but never an "if no key, skip" branch either."""
-    with pytest.raises(MissingAPIKeyError) as exc:
-        StructuredLLM(api_key=None)
-    assert "no findings" in str(exc.value)
+def test_no_review_module_constructs_a_model_client() -> None:
+    """ADR-015, as a property of the package rather than a habit.
+
+    A second client bypasses per-role routing, the token budget and record/replay at
+    once — and the last of those breaks CI silently by making live calls in a suite that
+    is supposed to make none.
+    """
+    import pathlib
+
+    review_dir = pathlib.Path(__file__).resolve().parents[3] / "app" / "review"
+    offenders = []
+    for path in review_dir.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        for forbidden in ("AsyncOpenAI", "AsyncAnthropic", "import openai", "import anthropic"):
+            if forbidden in source:
+                offenders.append(f"{path.name}: {forbidden}")
+    assert offenders == [], f"app/review/ must call app/core/llm.py only: {offenders}"
+
+
+def test_no_model_id_is_named_outside_config() -> None:
+    """ADR-015/ADR-024: no model string appears anywhere in `app/review/`."""
+    import pathlib
+
+    review_dir = pathlib.Path(__file__).resolve().parents[3] / "app" / "review"
+    offenders = [
+        path.name
+        for path in review_dir.rglob("*.py")
+        if any(
+            model in path.read_text(encoding="utf-8")
+            for model in ("gpt-5.4", "gpt-5.5", "claude-opus", "text-embedding-3")
+        )
+    ]
+    assert offenders == [], f"model IDs live in config.py alone; found in {offenders}"
 
 
 def test_no_review_module_writes_to_the_source_store() -> None:
@@ -559,16 +662,20 @@ class _FakeExtractor:
 class _FakeReranker:
     def __init__(self, shortlist) -> None:
         self.shortlist = shortlist
+        self.doc_ids: list[str] = []
 
-    async def rerank(self, claim, candidates, records, snippets=None):
+    async def rerank(self, claim, candidates, records, snippets=None, doc_id=""):
+        self.doc_ids.append(doc_id)
         return self.shortlist
 
 
 class _FakeVerifier:
     def __init__(self, outcomes) -> None:
         self.outcomes = list(outcomes)
+        self.doc_ids: list[str] = []
 
-    async def verify_detailed(self, claim_text, record):
+    async def verify_detailed(self, claim_text, record, doc_id=""):
+        self.doc_ids.append(doc_id)
         return self.outcomes.pop(0)
 
 
