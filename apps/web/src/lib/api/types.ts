@@ -2,15 +2,20 @@
  * HTTP transport shapes.
  *
  * Appendix A freezes the *domain* models but not the wire surface, so these are
- * the frontend's proposed request/response envelopes. They are filed as an
- * Interface Request in memory.md §5 (F1 → B3). Until B3 lands the endpoints,
- * every screen runs against the typed fixtures in ./fixtures, which are built
- * to exactly these shapes — so wiring up the real API is a base-URL change.
+ * the request/response envelopes. They began as F1's proposal to B3 (memory.md
+ * §5); where B3 has since served a shape of its own, **the API's shape is the
+ * one written here** — the edit console shipped against the proposal, and a type
+ * that describes a body the API does not send is worse than no type at all. It
+ * type-checks, so nothing catches it until the browser reads `undefined`.
+ *
+ * The fixtures in ./fixtures are built to exactly these shapes, so the two
+ * clients stay interchangeable.
  */
 import type {
   DocumentIR,
   Finding,
   KernelVerdict,
+  Operation,
   OrphanMarker,
   ParsedReference,
   ProposedChange,
@@ -83,6 +88,22 @@ export interface UploadProgress {
 }
 
 // ---------- review stream ----------
+/**
+ * `POST /documents/{docId}/review` → 202.
+ *
+ * `stream` and `poll` are the API's own URLs for this job, and the client follows
+ * them rather than composing its own. They are optional only because a very old
+ * API build omitted them; `subscribeReview` falls back to the document-scoped
+ * path, which is the one the router has always served.
+ */
+export interface ReviewStarted {
+  job_id: string;
+  doc_id: string;
+  /** e.g. `/api/documents/doc_x/review/stream` — origin-relative, `/api` included. */
+  stream?: string | null;
+  poll?: string | null;
+}
+
 export interface ReviewProgress {
   verified: number;
   total: number;
@@ -100,43 +121,158 @@ export interface ReviewHandle {
 }
 
 // ---------- edit console ----------
-/** A change that survived the kernel, with the verdict attached. */
-export interface ReviewedChange {
+/**
+ * `POST /documents/{docId}/commands` → the API's `ProposedChangeSet`.
+ *
+ * Nothing in it has been applied. The set is approved in **one** later request
+ * carrying the `base_version` it was composed against (ADR-021), which is why
+ * the id and the version live on this type rather than being re-derived by the
+ * console: an approval that lands on whatever the head happens to be is the
+ * silent lost update the optimistic lock exists to prevent.
+ */
+export interface CommandResult {
+  change_set_id: string;
+  doc_id: string;
+  base_version: number;
+  command: string;
+  plan_id: string | null;
+  /** `failed` is a real answer, not an error — `rejected` says why (HR-3). */
+  status: 'awaiting_approval' | 'failed';
+  attempts: number;
+  changes: EvaluatedChange[];
+  rejected: RejectedOperation[];
+  message: string | null;
+}
+
+/**
+ * A change that survived the kernel, with its verdict, its diff and its orphans.
+ *
+ * The API also sends a `context` field — the executor's evidence for the kernel
+ * (derived spans, verifications, reattachment records). It is deliberately absent
+ * here: it is an argument between the executor and the kernel, already settled by
+ * the time the user sees a verdict, and nothing on this screen renders it.
+ */
+export interface EvaluatedChange {
   change: ProposedChange;
   verdict: KernelVerdict;
+  diff: StructuralDiff;
+  notes: string[];
+  /**
+   * Anchors this change could not reattach above threshold (ADR-013 step 4).
+   * Per change, not per change set: an orphan belongs to the transform that
+   * unhoused it, and approving that change is what makes the decision binding.
+   */
+  orphans: OrphanOption[];
 }
 
-/** A change the kernel refused. Its reasons are shown, never swallowed (HR-3). */
-export interface RejectedOperation {
-  op_summary: string;
-  reasons: string[];
-  /** How many planner retries were spent before surfacing (CP-6, max 2). */
-  retries_spent: number;
-}
+export type OrphanAction = 'keep' | 'move' | 'remove';
 
-export interface CommandResult {
-  plan_id: string;
-  changes: ReviewedChange[];
-  rejected: RejectedOperation[];
-  /** Anchors that found no home after a transform → explicit user decision. */
-  orphaned_anchors: OrphanedAnchorDecision[];
-}
-
-export interface OrphanedAnchorDecision {
+/** An anchor raised as a decision. Never a deletion, never a default. */
+export interface OrphanOption {
   anchor_id: string;
+  marker: string | null;
   source_ids: string[];
-  original_marker_text: string | null;
-  /** Sentence the anchor used to live in. */
-  former_context: string;
-  /** Best reattachment the system found, and why it fell short of threshold. */
-  best_candidate: { span_id: string; preview: string; similarity: number } | null;
-  threshold: number;
+  fingerprint_id: string | null;
+  /** The closest home found, and the two bars it fell under. */
+  best_span_id: string | null;
+  best_span_text: string | null;
+  score: number | null;
+  threshold: number | null;
+  flag_floor: number | null;
+  actions: OrphanAction[];
 }
 
-export type AnchorResolution =
-  | { decision: 'keep_here' }
-  | { decision: 'move_to'; target_span_id: string }
-  | { decision: 'remove' };
+/** An operation the kernel refused. Its reasons are shown, never swallowed (HR-3). */
+export interface RejectedOperation {
+  /** `null` → the plan itself was malformed, so there is no operation to name. */
+  operation: Operation | null;
+  reasons: string[];
+  /** Which planner attempt this was (CP-6 allows 2 retries). */
+  attempt: number;
+}
+
+// ---------- structural diff ----------
+export interface SpanDelta {
+  status: 'added' | 'removed' | 'modified' | 'unchanged';
+  span_id: string;
+  before_text: string | null;
+  after_text: string | null;
+  anchor_ids: string[];
+}
+
+export interface BlockDelta {
+  status: 'added' | 'removed' | 'modified' | 'moved' | 'unchanged';
+  block_id: string;
+  before_section_id: string | null;
+  after_section_id: string | null;
+  spans: SpanDelta[];
+}
+
+export type AnchorStatus =
+  | 'unchanged'
+  | 'moved'
+  | 'source_changed'
+  | 'added'
+  | 'held_for_decision'
+  | 'removed';
+
+export interface AnchorDelta {
+  anchor_id: string;
+  status: AnchorStatus;
+  marker: string | null;
+  before_span_id: string | null;
+  after_span_id: string | null;
+  source_ids_before: string[];
+  source_ids_after: string[];
+  note: string | null;
+}
+
+/** HR-5 made checkable: every anchor the change touched, and what became of it. */
+export interface CitationLedger {
+  preserved: boolean;
+  total_before: number;
+  total_after: number;
+  sources_lost: Record<string, number>;
+  sources_gained: Record<string, number>;
+  anchors: AnchorDelta[];
+  held_for_decision: string[];
+}
+
+export interface StructuralDiff {
+  doc_id: string;
+  base_version: number;
+  citations: CitationLedger;
+  blocks: BlockDelta[];
+}
+
+// ---------- approval ----------
+export interface OrphanDecision {
+  anchor_id: string;
+  action: OrphanAction;
+  /** Required for `move`. */
+  target_span_id?: string | null;
+}
+
+/** `POST /change-sets/{id}/approve`. One request commits the whole set. */
+export interface ApprovalPayload {
+  base_version: number;
+  approved_change_ids: string[];
+  rejected_change_ids: string[];
+  orphan_decisions: OrphanDecision[];
+}
+
+export interface CommitResult {
+  committed: boolean;
+  doc_id: string;
+  base_version: number;
+  new_version: number | null;
+  applied_change_ids: string[];
+  /** change_id → why it could not be applied. Reported, never dropped quietly. */
+  skipped: Record<string, string>;
+  diff: StructuralDiff | null;
+  verdict: KernelVerdict | null;
+  message: string;
+}
 
 // ---------- export ----------
 export interface ExportManifest {
@@ -147,6 +283,10 @@ export interface ExportManifest {
   placeholder_blocks: { type: 'figure' | 'table' | 'equation'; count: number }[];
   bibliography_entries: number;
   style_id: string | null;
+  /** False when something must be decided before a .tex can be rendered at all. */
+  exportable: boolean;
+  /** Present exactly when `exportable` is false, in the API's own words. */
+  blocked_reason: string | null;
 }
 
 // ---------- health (HR-2) ----------

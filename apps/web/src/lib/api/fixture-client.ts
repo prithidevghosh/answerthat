@@ -1,5 +1,5 @@
 import type { ApiClient } from './client';
-import type { ReviewEvent, ReviewHandle } from './types';
+import type { ApprovalPayload, ReviewEvent, ReviewHandle } from './types';
 import * as F from './fixtures';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -39,6 +39,11 @@ export const fixtureClient: ApiClient = {
     return F.PARSE_RESULT;
   },
 
+  async getDocument() {
+    await wait(120);
+    return F.DOCUMENT;
+  },
+
   async getParseStatus() {
     await wait(60);
     // A fixture document is always already parsed — `uploadPdf` above walks the
@@ -63,12 +68,20 @@ export const fixtureClient: ApiClient = {
     return rec;
   },
 
-  async startReview() {
+  async startReview(docId) {
     await wait(150);
-    return { job_id: 'job-fixture-1' };
+    // Shaped like the real 202, stream URL included: a fixture that answered with
+    // less than the API does is a fixture the live path can drift away from
+    // unnoticed — which is precisely how the stream URL went wrong.
+    return {
+      job_id: 'job-fixture-1',
+      doc_id: docId,
+      stream: `/api/documents/${docId}/review/stream`,
+      poll: `/api/documents/${docId}/review/status`,
+    };
   },
 
-  subscribeReview(_jobId, onEvent): ReviewHandle {
+  subscribeReview(_started, onEvent): ReviewHandle {
     let cancelled = false;
     const timers: ReturnType<typeof setTimeout>[] = [];
     const at = (ms: number, fn: () => void) => {
@@ -115,12 +128,23 @@ export const fixtureClient: ApiClient = {
     return F.COMMAND_RESULT;
   },
 
-  async decideChange() {
-    await wait(200);
-  },
-
-  async resolveAnchor() {
-    await wait(200);
+  async approveChangeSet(_changeSetId: string, payload: ApprovalPayload) {
+    await wait(400);
+    return {
+      committed: payload.approved_change_ids.length > 0,
+      doc_id: F.DOCUMENT.doc_id,
+      base_version: payload.base_version,
+      new_version:
+        payload.approved_change_ids.length > 0 ? payload.base_version + 1 : null,
+      applied_change_ids: payload.approved_change_ids,
+      skipped: {},
+      diff: null,
+      verdict: null,
+      message:
+        payload.approved_change_ids.length > 0
+          ? `Committed ${payload.approved_change_ids.length} change(s) as version ${payload.base_version + 1}.`
+          : 'Nothing was approved, so nothing was written.',
+    };
   },
 
   async getExportManifest() {

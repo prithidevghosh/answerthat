@@ -5,10 +5,26 @@ import { Plate } from './Plate';
 import { Seal } from './Seal';
 import { DiffText } from './DiffText';
 import { AnchorSeals, type AnchorEntry } from './AnchorSeals';
-import type { ReviewedChange } from '@/lib/api/types';
+import type { AnchorDelta, EvaluatedChange } from '@/lib/api/types';
 import type { SourceRecord } from '@/lib/contracts';
 
 export type Decision = 'pending' | 'approved' | 'rejected';
+
+/**
+ * The kernel's per-anchor verdict → the three seals the reader understands.
+ *
+ * `held_for_decision` is the one that must not be softened: it is an anchor with
+ * nowhere to go, and calling it "kept" would make HR-5's guarantee unfalsifiable
+ * on the one screen where it matters.
+ */
+const FATE_FROM_STATUS: Record<AnchorDelta['status'], AnchorEntry['fate']> = {
+  unchanged: 'persisted',
+  moved: 'persisted',
+  source_changed: 'persisted',
+  added: 'added',
+  held_for_decision: 'orphaned',
+  removed: 'removed',
+};
 
 const OP_LABEL: Record<string, string> = {
   AddCitations: 'Add citations',
@@ -21,41 +37,44 @@ const OP_LABEL: Record<string, string> = {
 };
 
 export function ChangeCard({
-  reviewed,
+  evaluated,
   sources,
-  anchorSources,
   decision,
   onDecide,
   busy,
 }: {
-  reviewed: ReviewedChange;
+  evaluated: EvaluatedChange;
   sources: Record<string, SourceRecord>;
-  /** anchor_id → source_ids, from the orphaned-anchor decisions in the plan. */
-  anchorSources: Record<string, string[]>;
   decision: Decision;
   onDecide: (approve: boolean) => void;
   busy: boolean;
 }) {
-  const { change, verdict } = reviewed;
-  const fragment = change.new_fragment as { before?: string; after?: string };
+  const { change, verdict, diff, notes } = evaluated;
   const [error, setError] = useState<string | null>(null);
 
-  const anchors: AnchorEntry[] = [
-    ...change.orphaned_anchor_ids.flatMap((id) => {
-      const sids = anchorSources[id];
-      // If the plan did not tell us which source this anchor carried, show the
-      // anchor id rather than guessing at a citation.
-      if (!sids || sids.length === 0) {
-        return [{ anchor_id: id, source_id: id, fate: 'orphaned' as const }];
-      }
-      return sids.map((sid) => ({ anchor_id: id, source_id: sid, fate: 'orphaned' as const }));
-    }),
-    ...change.new_source_ids.map((sid, i) => ({
-      anchor_id: `new-${i}`,
-      source_id: sid,
-      fate: 'added' as const,
-    })),
-  ];
+  /**
+   * The prose diff comes from the structural diff, not from `new_fragment`.
+   *
+   * `new_fragment` is the executor's instruction to the applier — `replace_spans`,
+   * `move_blocks` — and its shape differs per operation. The diff is the thing
+   * built for a reader: every touched span, with the text before and after.
+   */
+  const spanDeltas = diff.blocks
+    .flatMap((block) => block.spans)
+    .filter((span) => span.status !== 'unchanged');
+
+  // Anchors come from the citation ledger, which accounts for every one the
+  // change touched — including the ones it left alone. That is the HR-5 claim,
+  // and showing only the new and the broken would be showing only the good news.
+  const anchors: AnchorEntry[] = diff.citations.anchors.flatMap((delta) => {
+    const fate = FATE_FROM_STATUS[delta.status];
+    const sids = delta.status === 'removed' ? delta.source_ids_before : delta.source_ids_after;
+    const shown = sids.length > 0 ? sids : delta.source_ids_before;
+    // An anchor whose sources we were not told is still an anchor. Show its id
+    // rather than dropping it from a ledger that claims to be complete.
+    if (shown.length === 0) return [{ anchor_id: delta.anchor_id, source_id: delta.anchor_id, fate }];
+    return shown.map((sid) => ({ anchor_id: delta.anchor_id, source_id: sid, fate }));
+  });
 
   const accent =
     decision === 'approved'
@@ -90,11 +109,18 @@ export function ChangeCard({
         </div>
       )}
 
-      {fragment.before !== undefined && fragment.after !== undefined && (
+      {spanDeltas.length > 0 && (
         <div className="mt-6">
           <p className="font-ui text-2xs uppercase tracking-[0.12em] text-muted">Proposed change</p>
-          <div className="mt-3 rounded border border-hair bg-paper-deep/50 px-5 py-4">
-            <DiffText before={fragment.before} after={fragment.after} />
+          <div className="mt-3 space-y-3">
+            {spanDeltas.map((span) => (
+              <div
+                key={span.span_id}
+                className="rounded border border-hair bg-paper-deep/50 px-5 py-4"
+              >
+                <DiffText before={span.before_text ?? ''} after={span.after_text ?? ''} />
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -104,7 +130,25 @@ export function ChangeCard({
         <div className="mt-3">
           <AnchorSeals entries={anchors} sources={sources} />
         </div>
+        {/* The ledger's own one-line statement, in the API's words rather than a
+            count this component re-derives and could get wrong. */}
+        <p className="mt-2 font-ui text-2xs text-muted">
+          {diff.citations.total_before} before · {diff.citations.total_after} after
+          {!diff.citations.preserved && (
+            <span className="text-madder"> — this change would shrink the citation set</span>
+          )}
+        </p>
       </div>
+
+      {notes.length > 0 && (
+        <ul className="mt-4 space-y-1">
+          {notes.map((note, i) => (
+            <li key={i} className="measure text-xs leading-relaxed text-secondary">
+              {note}
+            </li>
+          ))}
+        </ul>
+      )}
 
       {/* Kernel flags are warnings attached to a valid change — shown, never
           folded into the rationale. */}

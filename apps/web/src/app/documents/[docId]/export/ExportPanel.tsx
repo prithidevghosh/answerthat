@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { Plate } from '@/components/Plate';
 import { Seal } from '@/components/Seal';
 import { RuleWithFleuron } from '@/components/Ornament';
@@ -44,37 +45,67 @@ export function ExportPanel({ docId, manifest }: { docId: string; manifest: Expo
                 />
                 <Stat
                   label="Citation style"
-                  value={manifest.style_id ? styleName(manifest.style_id) : 'Not detected'}
+                  // Detection ran; it declined to pick between two near-tied
+                  // candidates. "Not detected" would misreport that as a failure.
+                  value={manifest.style_id ? styleName(manifest.style_id) : 'Not chosen yet'}
                 />
                 <Stat label="Format" value="LaTeX (.tex)" />
               </dl>
 
               <div className="mt-10">
-                <a
-                  href={getClient().exportUrl(docId)}
-                  download={manifest.filename}
-                  onClick={(e) => {
-                    if (USING_FIXTURES) {
-                      // Fixture mode has no file to hand over, and offering a
-                      // download that silently does nothing would be its own
-                      // small dishonesty.
-                      e.preventDefault();
-                    }
-                    setPressed(true);
-                    window.setTimeout(() => setPressed(false), 600);
-                  }}
-                  className={`inline-flex items-center gap-3 rounded border border-indigo/45 bg-plate px-7 py-3.5 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06] ${
-                    pressed ? 'animate-impress' : ''
-                  }`}
-                >
-                  <Seal kind="filled" size={17} />
-                  Download the revised .tex
-                </a>
+                {/*
+                  A button that cannot succeed is worse than no button: the user
+                  clicks, the render refuses, and the refusal arrives as a broken
+                  download rather than as the decision it actually is. So when the
+                  API says the export is blocked, we show the reason and the way
+                  out instead (HR-3).
+                */}
+                {manifest.exportable ? (
+                  <>
+                    <a
+                      href={getClient().exportUrl(docId)}
+                      download={manifest.filename}
+                      onClick={(e) => {
+                        if (USING_FIXTURES) {
+                          // Fixture mode has no file to hand over, and offering a
+                          // download that silently does nothing would be its own
+                          // small dishonesty.
+                          e.preventDefault();
+                        }
+                        setPressed(true);
+                        window.setTimeout(() => setPressed(false), 600);
+                      }}
+                      className={`inline-flex items-center gap-3 rounded border border-indigo/45 bg-plate px-7 py-3.5 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06] ${
+                        pressed ? 'animate-impress' : ''
+                      }`}
+                    >
+                      <Seal kind="filled" size={17} />
+                      Download the revised .tex
+                    </a>
 
-                {USING_FIXTURES && (
-                  <p className="mt-3 font-ui text-2xs text-sepia">
-                    Fixture mode — there is no real document to download.
-                  </p>
+                    {USING_FIXTURES && (
+                      <p className="mt-3 font-ui text-2xs text-sepia">
+                        Fixture mode — there is no real document to download.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <div className="rounded border border-sepia/40 bg-sepia/[0.05] px-6 py-5">
+                    <span className="inline-flex items-center gap-2 font-ui text-xs font-medium text-sepia">
+                      <Seal kind="half" size={17} />
+                      This export is not ready yet
+                    </span>
+                    <p className="measure mt-3 text-xs leading-relaxed text-secondary">
+                      {manifest.blocked_reason ??
+                        'The API reported that this document cannot be rendered yet.'}
+                    </p>
+                    <Link
+                      href={`/documents/${docId}/parse`}
+                      className="mt-5 inline-flex items-center gap-3 rounded border border-sepia/45 bg-plate px-6 py-3 font-ui text-xs text-primary transition-colors duration-ink ease-ink hover:bg-sepia/[0.07]"
+                    >
+                      Choose a citation style
+                    </Link>
+                  </div>
                 )}
               </div>
             </div>

@@ -1,17 +1,18 @@
-import { API_BASE, apiBase, type ApiClient } from './client';
+import { API_BASE, apiBase, browserUrl, type ApiClient } from './client';
 import type {
-  AnchorResolution,
   ApiStatus,
   CommandResult,
+  CommitResult,
   ExportManifest,
   ParseResult,
   ParseStatus,
   ReviewEvent,
   ReviewHandle,
+  ReviewStarted,
   UploadAccepted,
   UploadProgress,
 } from './types';
-import type { SourceRecord } from '../contracts';
+import type { DocumentIR, Finding, SourceRecord } from '../contracts';
 
 class ApiError extends Error {
   constructor(
@@ -214,11 +215,44 @@ async function uploadPdf(
   }
 }
 
+/**
+ * The `verified / total` counter, off whichever names the payload carries.
+ *
+ * The endpoint documents `{verified, total}` and the pipeline's own stats are
+ * `{claims_verified, claims_total}` — both are read, because a counter that
+ * silently resolves to `undefined` renders `NaN of — claims verified`, which is
+ * an in-progress review displaying as no review at all (HR-3). A payload with
+ * neither is reported as zero rather than as a number we made up.
+ */
+function counters(data: Record<string, unknown>): { verified: number; total: number } {
+  const num = (...keys: string[]): number => {
+    for (const key of keys) {
+      const value = Number(data[key]);
+      if (Number.isFinite(value)) return value;
+    }
+    return 0;
+  };
+  return { verified: num('verified', 'claims_verified'), total: num('total', 'claims_total') };
+}
+
+/** The server's own words for a failure. Never replaced with a friendlier guess. */
+function reason(data: Record<string, unknown>): string {
+  const named = [data.message, data.detail, data.error].find(
+    (v): v is string => typeof v === 'string' && v.length > 0,
+  );
+  return named ?? 'The review failed and the API gave no reason.';
+}
+
 export const liveClient: ApiClient = {
   getStatus,
   uploadPdf,
 
   getParseResult: (docId) => json<ParseResult>(`/documents/${docId}/parse`),
+
+  getDocument: (docId, version) =>
+    json<DocumentIR>(
+      `/documents/${docId}${version === undefined ? '' : `?version=${version}`}`,
+    ),
 
   async getParseStatus(docId) {
     try {
@@ -241,36 +275,88 @@ export const liveClient: ApiClient = {
 
   getSource: (sourceId) => json<SourceRecord>(`/sources/${sourceId}`),
 
-  startReview: (docId) => json<{ job_id: string }>(`/documents/${docId}/review`, { method: 'POST' }),
+  startReview: (docId) =>
+    json<ReviewStarted>(`/documents/${docId}/review`, { method: 'POST' }),
 
-  subscribeReview(jobId, onEvent): ReviewHandle {
+  subscribeReview(started, onEvent): ReviewHandle {
     // Connected straight to FastAPI. Proxying this through a Next route handler
     // buffers the stream and makes findings arrive in a clump at the end
     // (memory.md §3) — which would defeat the entire point of ADR-014.
-    const es = new EventSource(`${API_BASE}/reviews/${jobId}/stream`);
+    //
+    // The URL is the one the 202 named, not one composed here. Composing it is
+    // how this broke: the client asked for `/api/reviews/{job_id}/stream` while
+    // the router served `/api/documents/{doc_id}/review/stream`, so every review
+    // 404'd. Note the identifier as well as the shape — the runner keys jobs by
+    // *document*, and a job id would not have resolved even on the right path.
+    const url = browserUrl(started.stream ?? `/documents/${started.doc_id}/review/stream`);
+    const es = new EventSource(url);
 
-    const forward = (type: ReviewEvent['type']) => (ev: MessageEvent) => {
+    let closed = false;
+    const close = () => {
+      closed = true;
+      es.close();
+    };
+
+    const emit = (event: ReviewEvent) => {
+      if (!closed) onEvent(event);
+    };
+
+    const parse = (ev: MessageEvent): Record<string, unknown> | null => {
       try {
-        onEvent({ type, data: JSON.parse(ev.data) } as ReviewEvent);
+        return JSON.parse(ev.data) as Record<string, unknown>;
       } catch {
-        onEvent({
-          type: 'error',
-          data: { message: 'The review stream sent a malformed event.', recoverable: false },
-        });
+        return null;
       }
     };
 
-    es.addEventListener('progress', forward('progress'));
-    es.addEventListener('finding', forward('finding'));
-    es.addEventListener('done', (ev) => {
-      forward('done')(ev as MessageEvent);
-      es.close();
+    const malformed = () =>
+      emit({
+        type: 'error',
+        data: { message: 'The review stream sent a malformed event.', recoverable: false },
+      });
+
+    es.addEventListener('progress', (ev) => {
+      const data = parse(ev as MessageEvent);
+      if (!data) return malformed();
+      emit({ type: 'progress', data: counters(data) });
     });
-    es.addEventListener('error', () => {
-      // EventSource reconnects on its own; we surface the interruption either
-      // way, because a stalled review that looks finished is a false clean bill
-      // of health (HR-3).
-      onEvent({
+
+    es.addEventListener('finding', (ev) => {
+      const data = parse(ev as MessageEvent);
+      if (!data) return malformed();
+      emit({ type: 'finding', data: data as unknown as Finding });
+    });
+
+    // The wire says `complete`; this client's vocabulary says `done`. The two
+    // disagreed, so the terminal event was never recognised: the stream reached
+    // its end, the server closed the connection, and the UI reported "closed
+    // before finishing" on a review that had in fact finished.
+    const finish = (ev: MessageEvent) => {
+      const data = parse(ev);
+      if (!data) return malformed();
+      emit({ type: 'done', data: counters(data) });
+      close();
+    };
+    es.addEventListener('complete', (ev) => finish(ev as MessageEvent));
+    es.addEventListener('done', (ev) => finish(ev as MessageEvent));
+
+    es.addEventListener('error', (ev) => {
+      // Two different events arrive here. A *named* `error` event from the server
+      // is a MessageEvent carrying the reason, and it is terminal — the endpoint
+      // closes the stream after it. A transport error is a bare Event, and
+      // EventSource may still reconnect. Treating the first as the second is what
+      // turned a named backend failure into "reconnecting…" forever (HR-3).
+      const data = 'data' in ev ? parse(ev as MessageEvent) : null;
+      if (data) {
+        emit({
+          type: 'error',
+          data: { message: reason(data), recoverable: false },
+        });
+        close();
+        return;
+      }
+
+      emit({
         type: 'error',
         data: {
           message:
@@ -280,9 +366,11 @@ export const liveClient: ApiClient = {
           recoverable: es.readyState !== EventSource.CLOSED,
         },
       });
+      // A closed EventSource never reopens; stop pretending it might.
+      if (es.readyState === EventSource.CLOSED) close();
     });
 
-    return { close: () => es.close() };
+    return { close };
   },
 
   sendCommand: (docId, command) =>
@@ -292,16 +380,14 @@ export const liveClient: ApiClient = {
       body: JSON.stringify({ command }),
     }),
 
-  decideChange: (docId, changeId, approve) =>
-    json<void>(`/documents/${docId}/changes/${changeId}/${approve ? 'approve' : 'reject'}`, {
-      method: 'POST',
-    }),
-
-  resolveAnchor: (docId, anchorId, res) =>
-    json<void>(`/documents/${docId}/anchors/${anchorId}/resolve`, {
+  // The change set is addressed by its own id, not the document's: the id is what
+  // the API handed back, and it is what pins the approval to the proposal the user
+  // actually read.
+  approveChangeSet: (changeSetId, payload) =>
+    json<CommitResult>(`/change-sets/${changeSetId}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(res),
+      body: JSON.stringify(payload),
     }),
 
   getExportManifest: (docId) => json<ExportManifest>(`/documents/${docId}/export/manifest`),

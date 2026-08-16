@@ -1,16 +1,18 @@
 import type {
-  AnchorResolution,
   ApiStatus,
+  ApprovalPayload,
   CommandResult,
+  CommitResult,
   ExportManifest,
   ParseResult,
   ParseStatus,
   ReviewEvent,
   ReviewHandle,
+  ReviewStarted,
   UploadAccepted,
   UploadProgress,
 } from './types';
-import type { SourceRecord } from '../contracts';
+import type { DocumentIR, SourceRecord } from '../contracts';
 
 /**
  * The one seam between the frontend and the API.
@@ -29,6 +31,16 @@ export interface ApiClient {
   ): Promise<UploadAccepted>;
 
   getParseResult(docId: string): Promise<ParseResult>;
+  /**
+   * The IR itself, at head or at `version`.
+   *
+   * Distinct from `getParseResult` on purpose: the parse report is a record of one
+   * ingest and lives in the API process, so it goes away when the API restarts,
+   * while the document is in Postgres and does not. A screen that only needs the
+   * title and the version must ask for the document — asking for the parse report
+   * makes an editable document unreachable for a reason the user cannot act on.
+   */
+  getDocument(docId: string, version?: number): Promise<DocumentIR>;
   /** Where an ingest has got to. `null` when the API knows of no such job. */
   getParseStatus(docId: string): Promise<ParseStatus | null>;
   chooseStyle(docId: string, styleId: string): Promise<void>;
@@ -39,13 +51,28 @@ export interface ApiClient {
   // them straight from /csl/, which scripts/sync-csl-styles.mjs copies out of
   // packages/csl-styles at build time. One path to one set of files (HR-4).
 
-  startReview(docId: string): Promise<{ job_id: string }>;
-  /** Direct EventSource to FastAPI — never proxied through a Next route. */
-  subscribeReview(jobId: string, onEvent: (e: ReviewEvent) => void): ReviewHandle;
+  startReview(docId: string): Promise<ReviewStarted>;
+  /**
+   * Direct EventSource to FastAPI — never proxied through a Next route.
+   *
+   * Takes the whole `ReviewStarted`, not a job id: the 202 carries the stream
+   * URL, and following it is what stops the two halves inventing different ones.
+   * The last hand-built URL was `/api/reviews/{job_id}/stream`, which no router
+   * has ever served — every review 404'd, and the UI reported it as a review
+   * that could not run.
+   */
+  subscribeReview(started: ReviewStarted, onEvent: (e: ReviewEvent) => void): ReviewHandle;
 
   sendCommand(docId: string, command: string): Promise<CommandResult>;
-  decideChange(docId: string, changeId: string, approve: boolean): Promise<void>;
-  resolveAnchor(docId: string, anchorId: string, res: AnchorResolution): Promise<void>;
+  /**
+   * The one write in the edit flow. Per-change approve/reject and each orphan's
+   * decision travel together in a single request against a single
+   * `base_version`, because that is the only thing the API commits (ADR-021) —
+   * there is no per-change endpoint, and the two this client used to call
+   * (`/documents/{id}/changes/{id}/approve`, `/documents/{id}/anchors/{id}/resolve`)
+   * were never served by any router.
+   */
+  approveChangeSet(changeSetId: string, payload: ApprovalPayload): Promise<CommitResult>;
 
   getExportManifest(docId: string): Promise<ExportManifest>;
   /** Absolute URL so the browser downloads straight from the API. */
@@ -94,6 +121,22 @@ export const API_BASE = `${PUBLIC_ORIGIN}${API_PREFIX}`;
 /** Base for a fetch issued by whichever runtime is executing right now. */
 export function apiBase(): string {
   return typeof window === 'undefined' ? `${INTERNAL_ORIGIN}${API_PREFIX}` : API_BASE;
+}
+
+/**
+ * Absolute browser URL for a path **the API itself handed us** — `JobAccepted.poll`,
+ * `JobAccepted.stream`, and anything else the server names in a response body.
+ *
+ * Those paths already carry the `/api` prefix, so they join the *origin*; appending
+ * them to `API_BASE` would produce `/api/api/...`. Everything the frontend composes
+ * itself still goes through `API_BASE`, which is why both forms are accepted here.
+ */
+export function browserUrl(pathFromApi: string): string {
+  if (/^https?:\/\//i.test(pathFromApi)) return pathFromApi;
+  const path = pathFromApi.startsWith('/') ? pathFromApi : `/${pathFromApi}`;
+  return path === API_PREFIX || path.startsWith(`${API_PREFIX}/`)
+    ? `${PUBLIC_ORIGIN}${path}`
+    : `${API_BASE}${path}`;
 }
 
 /**

@@ -10,10 +10,17 @@ import type { RejectedOperation } from '@/lib/api/types';
  * edit that silently did less than the user asked for, which is the worst
  * possible outcome: the user believes their instruction was carried out.
  *
- * The retry count is shown because it is meaningful: the planner was told why
+ * The attempt number is shown because it is meaningful: the planner was told why
  * and tried again (max 2, CP-6), and still could not produce something valid.
  */
 export function RejectedOperationCard({ rejected }: { rejected: RejectedOperation }) {
+  const { operation } = rejected;
+  const summary = operation
+    ? `${operation.op} — ${operation.target_ids.join(', ')}`
+    : // No operation at all: the planner's output was not a plan. Saying so beats
+      // printing an empty line where an operation should be.
+      'The planner did not return a usable plan';
+
   return (
     <Plate as="li" accent="madder" className="px-6 py-6 sm:px-8">
       <span className="inline-flex items-center gap-2 font-ui text-xs font-medium text-madder">
@@ -22,7 +29,7 @@ export function RejectedOperationCard({ rejected }: { rejected: RejectedOperatio
       </span>
 
       <p className="mt-4 font-ui text-2xs uppercase tracking-[0.12em] text-muted">Operation</p>
-      <p className="mt-1 text-base text-primary">{rejected.op_summary}</p>
+      <p className="mt-1 text-base text-primary">{summary}</p>
 
       <p className="mt-5 font-ui text-2xs uppercase tracking-[0.12em] text-muted">
         Why it was refused
@@ -39,9 +46,8 @@ export function RejectedOperationCard({ rejected }: { rejected: RejectedOperatio
       </ul>
 
       <p className="mt-5 font-ui text-2xs text-muted">
-        The planner was given these reasons and retried {rejected.retries_spent} time
-        {rejected.retries_spent === 1 ? '' : 's'} before this was surfaced to you. Nothing in your
-        document was changed by this operation.
+        The planner was given these reasons and this was attempt {rejected.attempt} before it was
+        surfaced to you. Nothing in your document was changed by this operation.
       </p>
     </Plate>
   );

@@ -4,7 +4,7 @@ import { Seal } from './Seal';
 import { shortLabel } from '@/lib/csl/render';
 import type { SourceRecord } from '@/lib/contracts';
 
-export type AnchorFate = 'persisted' | 'added' | 'orphaned';
+export type AnchorFate = 'persisted' | 'added' | 'orphaned' | 'removed';
 
 export interface AnchorEntry {
   anchor_id: string;
@@ -27,6 +27,13 @@ const FATE: Record<AnchorFate, { label: string; tone: string; seal: 'filled' | '
     label: 'needs a decision',
     tone: 'text-madder border-madder/40 bg-madder/[0.05]',
     seal: 'dangling',
+  },
+  // HR-5 permits this only against an approved removal, so it is stated in the
+  // plainest word available rather than softened into "moved" or folded into "kept".
+  removed: {
+    label: 'removed',
+    tone: 'text-madder border-madder/40 bg-madder/[0.05]',
+    seal: 'open',
   },
 };
 
@@ -60,6 +67,7 @@ export function AnchorSeals({
   const kept = entries.filter((e) => e.fate === 'persisted').length;
   const added = entries.filter((e) => e.fate === 'added').length;
   const orphaned = entries.filter((e) => e.fate === 'orphaned').length;
+  const removed = entries.filter((e) => e.fate === 'removed').length;
 
   return (
     <div>
@@ -69,7 +77,8 @@ export function AnchorSeals({
           const source = sources[entry.source_id];
           const label = source ? shortLabel(source.csl) : entry.source_id;
           return (
-            <li key={entry.anchor_id}>
+            // One anchor can carry several sources, so the id alone is not unique here.
+            <li key={`${entry.anchor_id}:${entry.source_id}`}>
               <span
                 className={`inline-flex items-center gap-2 rounded border px-2.5 py-1.5 font-ui text-2xs ${fate.tone}`}
                 title={`${entry.anchor_id} — ${fate.label}`}
@@ -97,7 +106,13 @@ export function AnchorSeals({
             {orphaned} could not be reattached — your decision below
           </span>
         )}
-        {orphaned === 0 && <> · none lost</>}
+        {removed > 0 && (
+          <>
+            {(kept > 0 || added > 0 || orphaned > 0) && ' · '}
+            <span className="text-madder">{removed} removed</span>
+          </>
+        )}
+        {orphaned === 0 && removed === 0 && <> · none lost</>}
       </p>
     </div>
   );

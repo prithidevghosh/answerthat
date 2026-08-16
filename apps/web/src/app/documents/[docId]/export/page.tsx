@@ -23,11 +23,18 @@ export default async function ExportPage({ params }: { params: Promise<{ docId: 
   }
 
   let manifest;
-  let parse;
+  let document;
   try {
-    [manifest, parse] = await Promise.all([
+    /*
+      The document, not the parse report. Export is about the current head — its title
+      and its version — and the parse report is a record of one ingestion run, which is
+      held in process and does not survive an API restart. Reading it here meant a
+      restart turned a perfectly exportable document into "could not load the export",
+      naming a failed call the user has no way to connect to their paper.
+    */
+    [manifest, document] = await Promise.all([
       client.getExportManifest(docId),
-      client.getParseResult(docId),
+      client.getDocument(docId),
     ]);
   } catch (err) {
     return (
@@ -48,8 +55,8 @@ export default async function ExportPage({ params }: { params: Promise<{ docId: 
       <WorkbenchHeader
         docId={docId}
         current="export"
-        title={parse.document.metadata.title}
-        version={parse.document.version}
+        title={document.metadata.title}
+        version={document.version}
       />
       <ExportPanel docId={docId} manifest={manifest} />
       {/* The plate returns only at the foot, after the content — never behind it. */}

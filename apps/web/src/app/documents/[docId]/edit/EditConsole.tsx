@@ -9,7 +9,7 @@ import { Plate } from '@/components/Plate';
 import { Seal } from '@/components/Seal';
 import { Fleuron } from '@/components/Ornament';
 import { getClient } from '@/lib/api/client';
-import type { AnchorResolution, CommandResult } from '@/lib/api/types';
+import type { CommandResult, CommitResult, OrphanDecision, OrphanOption } from '@/lib/api/types';
 import type { SourceRecord } from '@/lib/contracts';
 
 type Phase = 'idle' | 'planning' | 'ready' | 'failed';
@@ -26,15 +26,35 @@ export function EditConsole({ docId }: { docId: string }) {
   const [result, setResult] = useState<CommandResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
-  const [anchorResolutions, setAnchorResolutions] = useState<Record<string, AnchorResolution>>({});
+  const [orphanDecisions, setOrphanDecisions] = useState<Record<string, OrphanDecision>>({});
   const [sources, setSources] = useState<Record<string, SourceRecord>>({});
   const [busy, setBusy] = useState(false);
+  const [commit, setCommit] = useState<CommitResult | null>(null);
+
+  /**
+   * Orphans hang off the change that unhoused them, so the console flattens them
+   * for display and carries the change_id along: a decision only becomes binding
+   * if its change is approved, and the commit has to know which is which.
+   */
+  const orphans = useMemo<{ changeId: string; option: OrphanOption }[]>(
+    () =>
+      (result?.changes ?? []).flatMap((c) =>
+        c.orphans.map((option) => ({ changeId: c.change.change_id, option })),
+      ),
+    [result],
+  );
 
   const neededIds = useMemo(() => {
     if (!result) return [];
     const ids = new Set<string>();
-    result.changes.forEach((c) => c.change.new_source_ids.forEach((s) => ids.add(s)));
-    result.orphaned_anchors.forEach((a) => a.source_ids.forEach((s) => ids.add(s)));
+    result.changes.forEach((c) => {
+      c.change.new_source_ids.forEach((s) => ids.add(s));
+      c.diff.citations.anchors.forEach((a) => {
+        a.source_ids_before.forEach((s) => ids.add(s));
+        a.source_ids_after.forEach((s) => ids.add(s));
+      });
+      c.orphans.forEach((o) => o.source_ids.forEach((s) => ids.add(s)));
+    });
     return [...ids].filter((id) => !(id in sources));
   }, [result, sources]);
 
@@ -54,14 +74,6 @@ export function EditConsole({ docId }: { docId: string }) {
     };
   }, [neededIds]);
 
-  const anchorSources = useMemo(() => {
-    const map: Record<string, string[]> = {};
-    result?.orphaned_anchors.forEach((a) => {
-      map[a.anchor_id] = a.source_ids;
-    });
-    return map;
-  }, [result]);
-
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = command.trim();
@@ -71,7 +83,8 @@ export function EditConsole({ docId }: { docId: string }) {
     setError(null);
     setResult(null);
     setDecisions({});
-    setAnchorResolutions({});
+    setOrphanDecisions({});
+    setCommit(null);
 
     try {
       const res = await getClient().sendCommand(docId, trimmed);
@@ -83,32 +96,53 @@ export function EditConsole({ docId }: { docId: string }) {
     }
   }
 
-  async function decide(changeId: string, approve: boolean) {
+  // Approve/reject and the anchor decisions are local until the user commits.
+  // Nothing here talks to the API: the whole set goes in one request, against the
+  // base_version the proposal was composed for (ADR-021).
+  function decide(changeId: string, approve: boolean) {
+    setDecisions((d) => ({ ...d, [changeId]: approve ? 'approved' : 'rejected' }));
+  }
+
+  function resolveAnchor(decision: OrphanDecision) {
+    setOrphanDecisions((r) => ({ ...r, [decision.anchor_id]: decision }));
+  }
+
+  const approvedIds = result
+    ? result.changes.map((c) => c.change.change_id).filter((id) => decisions[id] === 'approved')
+    : [];
+  const rejectedIds = result
+    ? result.changes.map((c) => c.change.change_id).filter((id) => decisions[id] === 'rejected')
+    : [];
+
+  // Only the orphans belonging to approved changes can block the commit — an
+  // orphan under a rejected change is moot, because its transform is not applied.
+  const blockingOrphans = orphans.filter(
+    ({ changeId, option }) =>
+      decisions[changeId] === 'approved' && !orphanDecisions[option.anchor_id],
+  );
+  const undecidedAnchors = blockingOrphans.length;
+
+  async function commitApproved() {
+    if (!result) return;
     setBusy(true);
+    setError(null);
     try {
-      await getClient().decideChange(docId, changeId, approve);
-      setDecisions((d) => ({ ...d, [changeId]: approve ? 'approved' : 'rejected' }));
+      const res = await getClient().approveChangeSet(result.change_set_id, {
+        base_version: result.base_version,
+        approved_change_ids: approvedIds,
+        rejected_change_ids: rejectedIds,
+        orphan_decisions: orphans
+          .filter(({ changeId }) => decisions[changeId] === 'approved')
+          .map(({ option }) => orphanDecisions[option.anchor_id])
+          .filter((d): d is OrphanDecision => Boolean(d)),
+      });
+      setCommit(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   }
-
-  async function resolveAnchor(anchorId: string, res: AnchorResolution) {
-    setBusy(true);
-    try {
-      await getClient().resolveAnchor(docId, anchorId, res);
-      setAnchorResolutions((r) => ({ ...r, [anchorId]: res }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const undecidedAnchors =
-    result?.orphaned_anchors.filter((a) => !anchorResolutions[a.anchor_id]).length ?? 0;
 
   return (
     <main id="main" className="relative z-10 content-column py-16">
@@ -170,7 +204,35 @@ export function EditConsole({ docId }: { docId: string }) {
 
       {result && (
         <div className="mt-12 space-y-12">
-          {result.orphaned_anchors.length > 0 && (
+          {/* A change set that reached the user with nothing in it is a real
+              answer, not an error — the API said so with a 200 and a reason. */}
+          {result.status === 'failed' && (
+            <Plate accent="madder" className="px-8 py-8">
+              <span className="inline-flex items-center gap-3 font-ui text-xs font-medium text-madder">
+                <Seal kind="broken" size={18} />
+                No part of this instruction could be applied
+              </span>
+              <p className="measure mt-4 text-secondary">
+                {result.message ??
+                  'The planner could not produce a change the kernel would accept.'}
+              </p>
+              <p className="measure mt-3 text-xs leading-relaxed text-secondary">
+                Your document is unchanged at version {result.base_version}. The reasons below are
+                the kernel&rsquo;s own.
+              </p>
+            </Plate>
+          )}
+
+          {error && phase === 'ready' && (
+            <p
+              role="alert"
+              className="rounded border border-madder/40 bg-madder/[0.05] px-5 py-4 font-ui text-xs text-madder"
+            >
+              {error}
+            </p>
+          )}
+
+          {orphans.length > 0 && (
             <section aria-labelledby="anchors-heading">
               <h2
                 id="anchors-heading"
@@ -179,13 +241,13 @@ export function EditConsole({ docId }: { docId: string }) {
                 Citations needing a decision
               </h2>
               <ul className="mt-6 space-y-6">
-                {result.orphaned_anchors.map((a) => (
+                {orphans.map(({ option }) => (
                   <OrphanedAnchorCard
-                    key={a.anchor_id}
-                    decision={a}
+                    key={option.anchor_id}
+                    option={option}
                     sources={sources}
-                    resolved={anchorResolutions[a.anchor_id] ?? null}
-                    onResolve={(res) => resolveAnchor(a.anchor_id, res)}
+                    resolved={orphanDecisions[option.anchor_id] ?? null}
+                    onResolve={resolveAnchor}
                     busy={busy}
                   />
                 ))}
@@ -207,18 +269,30 @@ export function EditConsole({ docId }: { docId: string }) {
               </p>
             ) : (
               <ul className="mt-6 space-y-6">
-                {result.changes.map((rc) => (
+                {result.changes.map((ec) => (
                   <ChangeCard
-                    key={rc.change.change_id}
-                    reviewed={rc}
+                    key={ec.change.change_id}
+                    evaluated={ec}
                     sources={sources}
-                    anchorSources={anchorSources}
-                    decision={decisions[rc.change.change_id] ?? 'pending'}
-                    onDecide={(approve) => decide(rc.change.change_id, approve)}
+                    decision={decisions[ec.change.change_id] ?? 'pending'}
+                    onDecide={(approve) => decide(ec.change.change_id, approve)}
                     busy={busy}
                   />
                 ))}
               </ul>
+            )}
+
+            {result.changes.length > 0 && (
+              <CommitBar
+                approved={approvedIds.length}
+                rejected={rejectedIds.length}
+                pending={result.changes.length - approvedIds.length - rejectedIds.length}
+                blocked={undecidedAnchors}
+                baseVersion={result.base_version}
+                busy={busy}
+                commit={commit}
+                onCommit={commitApproved}
+              />
             )}
           </section>
 
@@ -274,6 +348,90 @@ export function EditConsole({ docId }: { docId: string }) {
         </p>
       </form>
     </main>
+  );
+}
+
+/**
+ * The one write in this screen.
+ *
+ * Per-change approve/reject is a decision, not a commit: the API applies a change
+ * set in a single request against the `base_version` the proposal was composed
+ * for (ADR-021). Doing it any other way — a POST per card — is how a half-applied
+ * edit becomes possible, and there would be no version to name in the failure.
+ */
+function CommitBar({
+  approved,
+  rejected,
+  pending,
+  blocked,
+  baseVersion,
+  busy,
+  commit,
+  onCommit,
+}: {
+  approved: number;
+  rejected: number;
+  pending: number;
+  blocked: number;
+  baseVersion: number;
+  busy: boolean;
+  commit: CommitResult | null;
+  onCommit: () => void;
+}) {
+  if (commit) {
+    const skipped = Object.entries(commit.skipped);
+    return (
+      <Plate accent={commit.committed ? 'verdigris' : 'madder'} className="mt-8 px-6 py-6 sm:px-8">
+        <span
+          className={`inline-flex items-center gap-2 font-ui text-xs font-medium ${
+            commit.committed ? 'text-verdigris' : 'text-madder'
+          }`}
+        >
+          <Seal kind={commit.committed ? 'filled' : 'broken'} size={17} />
+          {commit.committed
+            ? `Committed as version ${commit.new_version}`
+            : 'Nothing was written'}
+        </span>
+        <p className="measure mt-3 text-xs leading-relaxed text-secondary">{commit.message}</p>
+        {/* A change the user approved that then failed to apply is reported, never
+            dropped quietly (HR-3). */}
+        {skipped.length > 0 && (
+          <ul className="mt-4 space-y-2">
+            {skipped.map(([changeId, why]) => (
+              <li
+                key={changeId}
+                className="measure border-l-2 border-madder/40 pl-4 text-xs leading-relaxed text-secondary"
+              >
+                <span className="font-mono text-2xs text-muted">{changeId}</span> — {why}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Plate>
+    );
+  }
+
+  return (
+    <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-3 border-t border-hair pt-6">
+      <button
+        type="button"
+        disabled={busy || approved === 0 || blocked > 0}
+        onClick={onCommit}
+        className="rounded border border-verdigris/45 px-6 py-2.5 font-ui text-xs text-verdigris transition-colors duration-ink ease-ink hover:bg-verdigris/[0.07] disabled:opacity-40"
+      >
+        {busy ? 'Applying…' : `Apply ${approved} approved change${approved === 1 ? '' : 's'}`}
+      </button>
+      <p className="font-ui text-2xs text-muted">
+        {approved} approved · {rejected} rejected · {pending} undecided — committing writes version{' '}
+        {baseVersion + 1}.
+        {blocked > 0 && (
+          <span className="block text-madder">
+            {blocked} citation{blocked === 1 ? '' : 's'} above still need
+            {blocked === 1 ? 's' : ''} a decision first.
+          </span>
+        )}
+      </p>
+    </div>
   );
 }
 

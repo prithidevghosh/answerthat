@@ -21,9 +21,13 @@ export default async function EditPage({ params }: { params: Promise<{ docId: st
     );
   }
 
-  let parse;
+  // The document, not the parse report: this screen needs a title and a version,
+  // and the parse report is an in-process record of one ingest that does not
+  // survive an API restart. Hanging the console off it made a perfectly editable
+  // document report itself as unloadable.
+  let document;
   try {
-    parse = await client.getParseResult(docId);
+    document = await client.getDocument(docId);
   } catch (err) {
     return (
       <>
@@ -43,8 +47,8 @@ export default async function EditPage({ params }: { params: Promise<{ docId: st
       <WorkbenchHeader
         docId={docId}
         current="edit"
-        title={parse.document.metadata.title}
-        version={parse.document.version}
+        title={document.metadata.title}
+        version={document.version}
       />
       <EditConsole docId={docId} />
     </>

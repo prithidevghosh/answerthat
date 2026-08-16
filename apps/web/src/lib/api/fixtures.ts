@@ -24,8 +24,9 @@ import type {
 import type {
   CommandResult,
   ExportManifest,
-  OrphanedAnchorDecision,
+  OrphanOption,
   ParseResult,
+  StructuralDiff,
   TierCounts,
 } from './types';
 
@@ -783,22 +784,121 @@ export const REVIEW_TOTAL = 47;
 // ---------------------------------------------------------------------------
 // Edit console
 // ---------------------------------------------------------------------------
-export const ORPHANED_ANCHOR: OrphanedAnchorDecision = {
+export const ORPHAN_OPTION: OrphanOption = {
   anchor_id: 'a-3',
+  marker: '[3]',
   source_ids: ['openalex:W3099711166'],
-  original_marker_text: '[3]',
-  former_context:
-    'Surveys of efficient transformer variants group these methods by the structure they impose on the attention matrix.',
-  best_candidate: {
-    span_id: 'sp-2-0',
-    preview: 'Efficient-transformer surveys organise methods by attention structure.',
-    similarity: 0.68,
-  },
+  fingerprint_id: 'fp-a-3',
+  best_span_id: 'sp-2-0',
+  best_span_text: 'Efficient-transformer surveys organise methods by attention structure.',
+  score: 0.68,
   threshold: 0.82,
+  flag_floor: 0.6,
+  actions: ['keep', 'move', 'remove'],
+};
+
+const SHORTEN_BEFORE =
+  'Surveys of efficient transformer variants group these methods by the structure they impose on the attention matrix.';
+const SHORTEN_AFTER = 'Efficient-transformer surveys organise methods by attention structure.';
+const CITED_BEFORE =
+  'Routing reduces measured wall-clock latency by 38% at 32k context while retaining 99.1% of dense recall.';
+const CITED_AFTER =
+  'Routing reduces measured wall-clock latency by 38% at 32k context while retaining 99.1% of dense recall [49].';
+
+/** The diff for the Shorten: one sentence compressed, one anchor left homeless. */
+const SHORTEN_DIFF: StructuralDiff = {
+  doc_id: DOCUMENT.doc_id,
+  base_version: DOCUMENT.version,
+  citations: {
+    preserved: true,
+    total_before: 12,
+    total_after: 12,
+    sources_lost: {},
+    sources_gained: {},
+    held_for_decision: ['a-3'],
+    anchors: [
+      {
+        anchor_id: 'a-3',
+        status: 'held_for_decision',
+        marker: '[3]',
+        before_span_id: 'sp-2-0',
+        after_span_id: null,
+        source_ids_before: ['openalex:W3099711166'],
+        source_ids_after: ['openalex:W3099711166'],
+        note: 'Best candidate scored 0.68, below the 0.82 reattachment threshold.',
+      },
+    ],
+  },
+  blocks: [
+    {
+      status: 'modified',
+      block_id: 'blk-2-0',
+      before_section_id: 'sec-2',
+      after_section_id: 'sec-2',
+      spans: [
+        {
+          status: 'modified',
+          span_id: 'sp-2-0',
+          before_text: SHORTEN_BEFORE,
+          after_text: SHORTEN_AFTER,
+          anchor_ids: ['a-3'],
+        },
+      ],
+    },
+  ],
+};
+
+/** The diff for the AddCitations: same sentence, one anchor gained. */
+const ADD_CITATIONS_DIFF: StructuralDiff = {
+  doc_id: DOCUMENT.doc_id,
+  base_version: DOCUMENT.version,
+  citations: {
+    preserved: true,
+    total_before: 12,
+    total_after: 13,
+    sources_lost: {},
+    sources_gained: { 'openalex:W4285119': 1 },
+    held_for_decision: [],
+    anchors: [
+      {
+        anchor_id: 'a-49',
+        status: 'added',
+        marker: '[49]',
+        before_span_id: null,
+        after_span_id: 'sp-4-0',
+        source_ids_before: [],
+        source_ids_after: ['openalex:W4285119'],
+        note: null,
+      },
+    ],
+  },
+  blocks: [
+    {
+      status: 'modified',
+      block_id: 'blk-4-0',
+      before_section_id: 'sec-4',
+      after_section_id: 'sec-4',
+      spans: [
+        {
+          status: 'modified',
+          span_id: 'sp-4-0',
+          before_text: CITED_BEFORE,
+          after_text: CITED_AFTER,
+          anchor_ids: ['a-49'],
+        },
+      ],
+    },
+  ],
 };
 
 export const COMMAND_RESULT: CommandResult = {
+  change_set_id: 'cs-7f2a1c93',
+  doc_id: DOCUMENT.doc_id,
+  base_version: DOCUMENT.version,
+  command: 'Shorten the related work section and back the latency claim with a citation.',
   plan_id: 'plan-7f2a',
+  status: 'awaiting_approval',
+  attempts: 2,
   changes: [
     {
       change: {
@@ -806,16 +906,11 @@ export const COMMAND_RESULT: CommandResult = {
         op: {
           op: 'Shorten',
           target_ids: ['sp-2-0'],
-          params: { target_reduction: 0.3 },
+          params: { ratio: 0.7 },
           no_typed_op_applies: false,
           justification: null,
         },
-        new_fragment: {
-          span_id: 'sp-2-0',
-          before:
-            'Surveys of efficient transformer variants group these methods by the structure they impose on the attention matrix.',
-          after: 'Efficient-transformer surveys organise methods by attention structure.',
-        },
+        new_fragment: { replace_spans: [{ id: 'sp-2-0', text: SHORTEN_AFTER }] },
         new_source_ids: [],
         orphaned_anchor_ids: ['a-3'],
         rationale:
@@ -826,6 +921,9 @@ export const COMMAND_RESULT: CommandResult = {
         reasons: ['Anchor a-3 found no home above the reattachment threshold after the transform.'],
         flags: ['orphaned_anchor'],
       },
+      diff: SHORTEN_DIFF,
+      notes: [],
+      orphans: [ORPHAN_OPTION],
     },
     {
       change: {
@@ -833,17 +931,11 @@ export const COMMAND_RESULT: CommandResult = {
         op: {
           op: 'AddCitations',
           target_ids: ['sp-4-0'],
-          params: {},
+          params: { count: 1 },
           no_typed_op_applies: false,
           justification: null,
         },
-        new_fragment: {
-          span_id: 'sp-4-0',
-          before:
-            'Routing reduces measured wall-clock latency by 38% at 32k context while retaining 99.1% of dense recall.',
-          after:
-            'Routing reduces measured wall-clock latency by 38% at 32k context while retaining 99.1% of dense recall [49].',
-        },
+        new_fragment: { replace_spans: [{ id: 'sp-4-0', text: CITED_AFTER }] },
         new_source_ids: ['openalex:W4285119'],
         orphaned_anchor_ids: [],
         rationale:
@@ -854,19 +946,28 @@ export const COMMAND_RESULT: CommandResult = {
         reasons: ['The cited source contradicts rather than supports the host claim.'],
         flags: ['weak_verification'],
       },
+      diff: ADD_CITATIONS_DIFF,
+      notes: [],
+      orphans: [],
     },
   ],
   rejected: [
     {
-      op_summary: 'RewriteSection — 2. Related Work',
+      operation: {
+        op: 'RewriteSection',
+        target_ids: ['sec-2'],
+        params: { instruction: 'Reframe the related work around routing rather than sparsity.' },
+        no_typed_op_applies: false,
+        justification: null,
+      },
       reasons: [
         'The document source_id multiset would shrink by 2 without an approved removal operation (HR-5).',
         'A newly asserted claim carried no anchor with a supporting verification.',
       ],
-      retries_spent: 2,
+      attempt: 2,
     },
   ],
-  orphaned_anchors: [ORPHANED_ANCHOR],
+  message: '1 operation(s) could not be validated after 2 retries.',
 };
 
 export const EXPORT_MANIFEST: ExportManifest = {
@@ -880,4 +981,6 @@ export const EXPORT_MANIFEST: ExportManifest = {
   ],
   bibliography_entries: COUNTS.resolved,
   style_id: 'ieee',
+  exportable: true,
+  blocked_reason: null,
 };

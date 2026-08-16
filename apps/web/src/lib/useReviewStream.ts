@@ -54,10 +54,12 @@ export function useReviewStream(docId: string, autoStart: boolean): ReviewState 
 
     client
       .startReview(docId)
-      .then(({ job_id }) => {
+      .then((started) => {
         setState((s) => ({ ...s, phase: 'streaming' }));
 
-        handleRef.current = client.subscribeReview(job_id, (event) => {
+        // The whole 202, not just its job id: the stream URL is the API's to
+        // name, and the client's job is to follow it.
+        handleRef.current = client.subscribeReview(started, (event) => {
           setState((prev) => {
             switch (event.type) {
               case 'progress':
