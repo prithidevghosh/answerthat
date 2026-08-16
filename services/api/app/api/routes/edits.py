@@ -33,7 +33,7 @@ async def submit_command(request: Request, doc_id: str, payload: CommandRequest)
     why in the kernel's own words (HR-3).
     """
     svc = services(request)
-    document = await load_document(svc, doc_id, payload.version)
+    document = await load_document(svc, doc_id, payload.base_version)
 
     change_set = await svc.command_loop().run(document, payload.command)
     svc.change_set_store().put(change_set)
@@ -52,9 +52,13 @@ async def list_change_sets(request: Request, doc_id: str) -> list[ProposedChange
 
 @router.post("/change-sets/{change_set_id}/approve", response_model=CommitResult)
 async def approve(request: Request, change_set_id: str, payload: ApprovalPayload) -> CommitResult:
-    """Commit the approved subset. Returns 409 if a citation is still waiting on a decision
-    — an undecided orphaned anchor is not something this endpoint resolves on the user's
-    behalf in either direction (ADR-013 step 4)."""
+    """Commit the approved subset.
+
+    Two distinct 409s, and the difference matters to the UI. A citation still waiting on a
+    decision is a 409 the user resolves by choosing — this endpoint does not resolve an
+    undecided orphaned anchor on their behalf in either direction (ADR-013 step 4). A moved
+    head is a 409 the UI resolves by re-planning against `current_version` (ADR-021).
+    """
     svc = services(request)
     change_set = svc.change_set_store().get(change_set_id)
 
@@ -71,6 +75,7 @@ async def approve(request: Request, change_set_id: str, payload: ApprovalPayload
         change_set,
         ApprovalRequest(
             change_set_id=change_set_id,
+            base_version=payload.base_version,
             approved_change_ids=payload.approved_change_ids,
             rejected_change_ids=payload.rejected_change_ids,
             orphan_decisions=payload.orphan_decisions,

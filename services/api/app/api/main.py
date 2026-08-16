@@ -17,10 +17,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.agent.store import ChangeSetNotFound
-from app.agent.versioning import ApprovalError
+from app.agent.versioning import ApprovalError, VersionConflict
 from app.api.deps import DependencyUnavailable, Services, build_services
 from app.api.routes import documents, edits, review
+from app.api.schemas import VersionConflictDetail
 from app.core.contracts import KernelRejection, MissingAPIKeyError, ParseFailure
+from app.core.errors import IRVersionConflict
 
 log = logging.getLogger("app.api")
 
@@ -48,7 +50,7 @@ def create_app(services: Services | None = None) -> FastAPI:
             for name in (
                 "documents", "sources", "render_probe", "exporter", "retrieval",
                 "verifier", "claims", "review", "ingest", "style",
-                "embedder", "text_model", "structured_model",
+                "embedder", "text_model", "structured_model", "fingerprints",
             )
         }
         missing = sorted(name for name, ok in bound.items() if not ok)
@@ -127,6 +129,34 @@ def _install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApprovalError)
     async def _approval(_request: Request, exc: ApprovalError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"error": "approval_invalid", "detail": str(exc)})
+
+    @app.exception_handler(VersionConflict)
+    async def _conflict(_request: Request, exc: VersionConflict) -> JSONResponse:
+        """ADR-021. The response carries the new head so the client can re-plan against it
+        — a conflict the UI cannot act on would just be a dead end with a nicer name."""
+        return JSONResponse(
+            status_code=409,
+            content=VersionConflictDetail(
+                doc_id=exc.doc_id,
+                base_version=exc.base_version,
+                current_version=exc.current_version,
+                detail=exc.detail,
+            ).model_dump(mode="json"),
+        )
+
+    @app.exception_handler(IRVersionConflict)
+    async def _ir_conflict(_request: Request, exc: IRVersionConflict) -> JSONResponse:
+        """The same condition caught inside B1's store, at the write itself. It reaches
+        here only when the pre-checks raced; the shape stays the same so the client has one
+        thing to handle."""
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "version_conflict",
+                "detail": str(exc),
+                "hint": "Nothing was written. Re-read the head and re-plan (ADR-021).",
+            },
+        )
 
     @app.exception_handler(KernelRejection)
     async def _kernel(_request: Request, exc: KernelRejection) -> JSONResponse:
