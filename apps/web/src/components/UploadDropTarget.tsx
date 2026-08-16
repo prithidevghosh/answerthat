@@ -324,7 +324,7 @@ export function UploadDropTarget() {
 
 const ROUTES: { flow: Flow; name: string; line: string }[] = [
   { flow: 'guided', name: 'Guided', line: 'You drive' },
-  { flow: 'conversational', name: 'Conversational', line: 'An assistant drives' },
+  { flow: 'conversational', name: 'Agentic', line: 'An assistant drives' },
 ];
 
 /**

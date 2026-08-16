@@ -35,10 +35,16 @@ export function WorkbenchHeader({
    * `'chat'` is not a fifth stage and is deliberately not in `STEPS`.
    *
    * The conversational flow is a second path through the same four operations,
-   * not a step after export, so it takes its own entry ahead of the plates and
-   * leaves the deterministic screens exactly as they were. The four stay
-   * reachable from it: it is the same document at the same versions, and a user
-   * who wants to read a diff on Pl. III should not have to start over.
+   * not a step after export, so it does not get a stage of its own — and the
+   * four stages are not shown beside it either. A stepper on the chat screen
+   * says the conversation is one phase of a four-phase march, which is the
+   * opposite of what the flow is: the agent does all four, in whatever order
+   * the user asks for, and none of them is a place the user has to go.
+   *
+   * What it gets instead is one crossing link, which is all §4 asked for. The
+   * guided screens stay readable — same document, same versions — and a user
+   * who wants to study a diff on Pl. III arrives there and picks up the stepper
+   * from that side.
    */
   current: Step | 'chat';
   title?: string | null;
@@ -64,29 +70,22 @@ export function WorkbenchHeader({
           )}
         </div>
 
+        {current === 'chat' ? (
+          <Link
+            href={`/documents/${docId}/parse`}
+            className="group flex items-baseline gap-2 pb-1 text-muted transition-colors duration-ink ease-ink hover:text-cobalt"
+          >
+            <span className="font-body text-xs leading-none">Guided screens</span>
+            <span
+              aria-hidden="true"
+              className="text-2xs leading-none transition-transform duration-ink ease-ink group-hover:translate-x-0.5"
+            >
+              →
+            </span>
+          </Link>
+        ) : (
         <nav aria-label="Stages">
           <ol className="flex items-stretch">
-            {current === 'chat' && (
-              <li className="flex items-stretch">
-                <Link
-                  href={`/documents/${docId}/chat`}
-                  aria-current="page"
-                  className="group flex flex-col items-center gap-1 px-2 pb-1.5 pt-1 text-cobalt sm:px-3"
-                >
-                  <span aria-hidden="true" className="engraved-label">
-                    Conv.
-                  </span>
-                  <span className="font-body text-xs leading-none">Chat</span>
-                  <span
-                    aria-hidden="true"
-                    className="h-[2px] w-full origin-left animate-draw-rule bg-cobalt"
-                  />
-                </Link>
-                <span aria-hidden="true" className="mx-1 self-center text-2xs text-palest sm:mx-2">
-                  ·
-                </span>
-              </li>
-            )}
             {STEPS.map((step, i) => {
               const isCurrent = step.id === current;
               return (
@@ -128,6 +127,7 @@ export function WorkbenchHeader({
             })}
           </ol>
         </nav>
+        )}
       </div>
     </header>
   );

@@ -368,9 +368,19 @@ never a rounded track, never a spinner, never a bar animated to fill a silence. 
 the composer while running and settles into the transcript at the point it completed, because a
 finished run is part of the record of what happened.
 
+*No stepper.* `WorkbenchHeader` carries the document identity here and nothing else — the four
+stage tabs are **not** shown. A stepper on this screen says the conversation is one phase of a
+four-phase march, which is the opposite of what the flow is: the agent does all four, in whatever
+order it is asked to, and none of them is a place the user has to go. One quiet crossing link —
+"Guided screens →" — is the whole of it. The guided screens stay readable, same document and same
+versions, and a user who wants to study a diff on Pl. III arrives there and picks the stepper up
+from that side.
+
 *The plate follows the work.* Pl. I while parsing, II while reviewing, III on a pending edit, IV on
 a pending export. The four plates are the four stages and this screen does all four in turn, so
-pinning it to one numeral would put the parse engraving beside a running review.
+pinning it to one numeral would put the parse engraving beside a running review. That is also why
+the plate carries the stage here and the header does not: an ornament that tracks the work reads as
+atmosphere, while a tab row that tracks it reads as an instruction.
 
 *Confirmation is a message, never a request.* Yes and No post canonical text into the conversation;
 neither calls an endpoint. Orphaned anchors each get their own `<OrphanedAnchorCard>` with the three
