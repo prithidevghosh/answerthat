@@ -62,6 +62,14 @@ OPTIONAL_KEYS: dict[str, str] = {
 }
 
 
+# Where the web app runs under `docker compose up` and `pnpm dev`. Used only when
+# CORS_ORIGINS is unset, so a deployment that sets it gets exactly what it asked for.
+DEFAULT_CORS_ORIGINS: tuple[str, ...] = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(_REPO_ROOT / ".env"),
@@ -87,6 +95,19 @@ class Settings(BaseSettings):
     grobid_url: str = "http://grobid:8070"
     database_url: str = "postgresql+asyncpg://answerthat:answerthat@postgres:5432/answerthat"
     redis_url: str = "redis://redis:6379/0"
+
+    # ---------- CORS ----------
+    # The browser talks to this API directly rather than through a Next.js route handler,
+    # including for the review SSE stream (memory.md §5), so *every* origin the web app is
+    # served from has to be named here or the stream never opens. Comma-separated, because
+    # a deployment sets it as a plain environment variable and pydantic-settings would
+    # otherwise demand JSON. Empty falls back to the localhost pair in `allowed_origins()`.
+    cors_origins: str = ""
+    # For hosts whose origin is not knowable ahead of time — Vercel gives every preview
+    # deployment its own subdomain. A regex here rather than a wildcard in `cors_origins`:
+    # `allow_origins=["*"]` and `allow_credentials=True` is a combination Starlette
+    # silently drops the credentials for, which would look like an auth bug much later.
+    cors_origin_regex: str = ""
 
     # ---------- paths ----------
     # Mounted into the api container and read by the frontend's citation.js. One copy,
@@ -133,6 +154,15 @@ class Settings(BaseSettings):
     # Per-document LLM ceiling. Exceeding it raises and surfaces rather than silently
     # truncating the review (ADR-015).
     doc_token_budget: int = Field(default=2_000_000, ge=1)
+
+    def allowed_origins(self) -> list[str]:
+        """Origins the browser may call this API from, in CORSMiddleware's order.
+
+        The local pair is the fallback rather than an addition: a deployment that names
+        its real origins should not keep an implicit hole for anything on localhost.
+        """
+        named = [origin.strip().rstrip("/") for origin in self.cors_origins.split(",")]
+        return [origin for origin in named if origin] or list(DEFAULT_CORS_ORIGINS)
 
     def model_for(self, role: LLMRole) -> str:
         """The model ID for a role. The only sanctioned way to name a model."""

@@ -23,7 +23,7 @@ from app.agent.versioning import ApprovalError, VersionConflict
 from app.api.deps import DependencyUnavailable, Services, build_services
 from app.api.routes import documents, edits, jobs, review, sources
 from app.api.schemas import VersionConflictDetail
-from app.core.config import unauthenticated_providers
+from app.core.config import DEFAULT_CORS_ORIGINS, unauthenticated_providers
 from app.core.contracts import KernelRejection, MissingAPIKeyError, ParseFailure
 from app.core.db import create_all, dispose_engine
 from app.core.errors import ExportFailure, IRVersionConflict
@@ -155,13 +155,17 @@ def _install_cors(app: FastAPI, services: Services) -> None:
     """The browser connects to this service directly, including for SSE — see memory.md §5.
     Proxying the review stream through a Next.js route handler buffers it and makes
     streaming look broken, so CORS here is load-bearing rather than convenience."""
-    origins = getattr(services.settings, "cors_origins", None) or [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+    resolve = getattr(services.settings, "allowed_origins", None)
+    origins = list(resolve()) if callable(resolve) else list(DEFAULT_CORS_ORIGINS)
+    # Vercel names every preview deployment differently, so the deployed origins cannot
+    # all be enumerated in advance; CORS_ORIGIN_REGEX covers that set. Empty (the default,
+    # and what compose runs with) means no regex is passed at all.
+    origin_regex = getattr(services.settings, "cors_origin_regex", "") or None
+    log.info("CORS allows %s%s", origins, f" + /{origin_regex}/" if origin_regex else "")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list(origins),
+        allow_origins=origins,
+        allow_origin_regex=origin_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

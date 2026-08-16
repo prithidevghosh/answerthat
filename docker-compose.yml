@@ -17,7 +17,10 @@ name: answerthat
 services:
   api:
     build:
-      context: ./services/api
+      # Root context, not ./services/api: the image copies packages/csl-styles so it can
+      # also run where there is no host to mount from (see services/api/Dockerfile).
+      context: .
+      dockerfile: services/api/Dockerfile
     environment:
       # No defaults for these two. An unset key must abort startup, and a compose-level
       # default would quietly supply the empty string that HR-2 exists to reject.

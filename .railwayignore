@@ -1,0 +1,8 @@
+# `railway up` uploads this directory before it builds. Nothing here is read by
+# services/api/Dockerfile, and the plates alone are ~50 MB of upload per deploy.
+apps/
+design/
+*.png
+*.svg
+*.md
+!services/api/**/*.md
