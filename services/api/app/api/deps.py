@@ -183,7 +183,7 @@ def build_services() -> Services:
     _bind(services, "retrieval", "app.review.retrieval", ("get_retrieval_service",), settings)
     _bind(services, "verifier", "app.review.verify", ("get_verification_service",), settings)
     _bind(services, "claims", "app.review.claims", ("get_claim_extractor",), settings)
-    _bind(services, "review", "app.review.runner", ("get_review_runner",), settings)
+    _bind_review(services, settings)
 
     from app.api.models import build_model_clients  # noqa: PLC0415
 
@@ -233,6 +233,28 @@ def _bind_fingerprints(services: Services, settings: Any) -> None:
         model=settings.embedding_model,
         dimensions=settings.embedding_dimensions,
     )
+
+
+def _bind_review(services: Services, settings: Any) -> None:
+    """B2's review job runner, which needs B1's document store injected.
+
+    `app/review/` must not import `app/ir/`, so B2 takes a factory instead — and this is
+    the only place in the process that knows both halves. The factory is lazy on purpose:
+    it is called per job, so a review started after the document store was bound picks it
+    up rather than capturing whatever was there at boot.
+    """
+    try:
+        from app.review.composition import build_review_runner  # noqa: PLC0415
+        from app.review.runner import get_review_runner  # noqa: PLC0415
+    except ImportError as exc:
+        log.warning("review unavailable: %s", exc)
+        return
+
+    def pipeline_factory() -> Any:
+        return build_review_runner(services.require("documents"), settings)
+
+    services.review = get_review_runner(settings, review_runner_factory=pipeline_factory)
+    log.info("bound review → app.review.runner.get_review_runner")
 
 
 def _bind_jobs(services: Services, settings: Any) -> None:
