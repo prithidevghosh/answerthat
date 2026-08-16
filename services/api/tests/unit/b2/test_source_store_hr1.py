@@ -121,31 +121,78 @@ def test_a_later_abstract_enriches_rather_than_overwrites() -> None:
     """The fallback chain legitimately fills in an abstract after the first write."""
     existing = _stored()
     incoming = _stored(abstract="We propose a new architecture.", abstract_source=AbstractSource.S2)
-    merged = _merge_append_only(existing, incoming)
+    merged = _merge_append_only(existing, incoming).record
     assert merged is not None
     assert merged.abstract == "We propose a new architecture."
     assert merged.abstract_source is AbstractSource.S2
     assert merged.csl == existing.csl
 
 
-def test_new_csl_fields_are_added_but_existing_ones_are_never_changed() -> None:
+def test_new_csl_fields_are_added() -> None:
     existing = _stored(csl={"title": "T", "DOI": "10.5555/real"})
     incoming = _stored(csl={"title": "T", "DOI": "10.5555/real", "issued": {"date-parts": [[2017]]}})
-    merged = _merge_append_only(existing, incoming)
+    merged = _merge_append_only(existing, incoming).record
     assert merged is not None
     assert merged.csl["issued"] == {"date-parts": [[2017]]}
 
 
-def test_changing_a_stored_value_is_refused() -> None:
+# ------------------------------------------------- ADR-028: three classes of difference
+
+
+def test_a_descriptive_disagreement_is_recorded_rather_than_raised() -> None:
+    """The bug ADR-028 exists for.
+
+    Two providers describing one DOI differently is additional information, not an
+    overwrite attempt. This used to raise, and because nothing catches
+    `AppendOnlyViolation`, one publisher string failed the ingest of a whole paper.
+    """
+    existing = _stored(csl={"title": "T", "publisher": "AAAI"})
+    incoming = _stored(csl={"title": "T", "publisher": "AAAI (Association for the …)"})
+
+    result = _merge_append_only(existing, incoming)
+
+    assert result.record is not None
+    # The stored reading stays canonical: a quote may already have been checked against
+    # it, and choosing between readings is the arbiter's job.
+    assert result.record.csl["publisher"] == "AAAI"
+    assert [d["field"] for d in result.disagreements] == ["publisher"]
+    assert result.disagreements[0]["stored"] == "AAAI"
+    assert result.disagreements[0]["offered"] == "AAAI (Association for the …)"
+    # Attributable and checkable, or it is not an audit trail.
+    assert result.disagreements[0]["offered_by"] == incoming.provenance.provider
+    assert result.disagreements[0]["external_url"].startswith("https://")
+
+
+def test_a_disagreement_alone_still_earns_a_version() -> None:
+    """Nothing was added, but something was learned. Recording it is the whole point."""
     existing = _stored(csl={"title": "Attention Is All You Need"})
     incoming = _stored(csl={"title": "Attention Is Mostly What You Need"})
+
+    result = _merge_append_only(existing, incoming)
+
+    assert not result.is_noop
+    assert result.record is not None
+    assert result.record.csl["title"] == "Attention Is All You Need"
+    assert result.disagreements[0]["offered"] == "Attention Is Mostly What You Need"
+
+
+def test_changing_an_identity_field_is_still_refused() -> None:
+    """The part of HR-1 ADR-028 does not touch.
+
+    `source_id` is minted from the DOI, so a differing DOI under one id means the minting
+    is broken — and carrying on would file one paper's evidence under another's.
+    """
+    existing = _stored(csl={"title": "T", "DOI": "10.5555/real"})
+    incoming = _stored(csl={"title": "T", "DOI": "10.5555/different"})
     with pytest.raises(AppendOnlyViolation) as exc:
         _merge_append_only(existing, incoming)
-    assert "csl.title" in str(exc.value)
+    assert "csl.DOI" in str(exc.value)
+    assert "identity" in str(exc.value)
 
 
-def test_two_providers_disagreeing_on_an_abstract_surfaces_rather_than_picks() -> None:
-    """A quote may already have been substring-checked against the stored abstract."""
+def test_two_providers_disagreeing_on_an_abstract_still_raises() -> None:
+    """Also untouched by ADR-028, and for a specific reason: a finding's quote has very
+    likely been substring-checked against the stored abstract already."""
     existing = _stored(abstract="Original abstract text.", abstract_source=AbstractSource.S2)
     incoming = _stored(
         abstract="A different abstract text.", abstract_source=AbstractSource.OPENALEX_INVERTED
@@ -154,15 +201,50 @@ def test_two_providers_disagreeing_on_an_abstract_surfaces_rather_than_picks() -
         _merge_append_only(existing, incoming)
 
 
+def test_provider_namespaced_facts_merge_instead_of_colliding() -> None:
+    """The measured cause of the 100% collision rate.
+
+    `custom` was compared as one value, so two providers' bags conflicted even when
+    entirely complementary — and a citation count, which legitimately differs between
+    providers and between two reads, was compared as though it could never change.
+    """
+    existing = _stored(
+        csl={
+            "title": "T",
+            "custom": {
+                "openalex_id": "W1",
+                "providers": {"openalex": {"citation_count": 349}},
+            },
+        }
+    )
+    incoming = _stored(
+        csl={
+            "title": "T",
+            "custom": {
+                "s2_paper_id": "abc",
+                "providers": {"crossref": {"citation_count": 164}},
+            },
+        }
+    )
+
+    result = _merge_append_only(existing, incoming)
+
+    assert result.disagreements == [], "complementary provider facts are not a conflict"
+    custom = result.record.csl["custom"]
+    assert custom["openalex_id"] == "W1" and custom["s2_paper_id"] == "abc"
+    # Both counts survive, each attributed to whoever measured it.
+    assert custom["providers"]["openalex"]["citation_count"] == 349
+    assert custom["providers"]["crossref"]["citation_count"] == 164
+
+
 def test_an_identical_rewrite_is_a_no_op_not_a_new_version() -> None:
-    existing = _stored()
-    assert _merge_append_only(existing, _stored()) is None
+    assert _merge_append_only(_stored(), _stored()).is_noop
 
 
 def test_an_unavailable_abstract_never_clobbers_a_real_one() -> None:
     existing = _stored(abstract="Real abstract.", abstract_source=AbstractSource.S2)
     incoming = _stored(abstract=None, abstract_source=AbstractSource.UNAVAILABLE)
-    assert _merge_append_only(existing, incoming) is None
+    assert _merge_append_only(existing, incoming).is_noop
 
 
 # --------------------------------------------------------------- sync reads (HR-3)

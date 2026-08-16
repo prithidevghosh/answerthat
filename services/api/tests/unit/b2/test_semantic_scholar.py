@@ -254,8 +254,12 @@ async def test_name_particles_survive_the_split(s2, no_abstract_paper) -> None:
     provider, _ = s2({"/graph/v1/paper/search": {"data": [no_abstract_paper]}})
     (record,) = await provider.search_works("x")
     assert record.csl["author"][0] == {"family": "van der Berg", "given": "Ada"}
-    # The provider's original string is retained, so a bad split is auditable.
-    assert record.csl["custom"]["raw_author_names"] == ["Ada van der Berg"]
+    # The provider's original string is retained, so a bad split is auditable. Filed
+    # under the provider that said it (ADR-028): it is that provider's rendering, and
+    # two providers spelling the authors differently is expected rather than a conflict.
+    assert record.csl["custom"]["providers"]["semantic_scholar"]["raw_author_names"] == [
+        "Ada van der Berg"
+    ]
 
 
 # --------------------------------------------------------------------------- snippets

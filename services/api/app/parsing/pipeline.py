@@ -31,7 +31,7 @@ from app.ir import ids
 from app.ir.traversal import iter_anchors
 from app.parsing.arbiter import Arbiter, ArbiterProviders, Reconciliation
 from app.parsing.grobid import GrobidClient
-from app.parsing.models import ParsedDocument, TierCounts
+from app.parsing.models import OrphanMarker, ParsedDocument, TierCounts
 from app.parsing.references import references_from_tei
 from app.parsing.registry import registry
 from app.parsing.repair import ReferenceSegmenter, RepairOutcome, repair_references
@@ -367,6 +367,36 @@ class IngestPipeline:
             return stored.version
 
 
+def _orphan_location(result: IngestResult, orphan: OrphanMarker) -> dict[str, Any]:
+    """The sentence an orphan marker sits in, and the heading above it.
+
+    Both live in the IR — `Span.text` and `Section.title` — and only the IR has them, so
+    resolving here is the difference between a card that locates the marker in the
+    manuscript and a card that shows an id.
+
+    Missing values come back as `None`, never as a fabricated snippet: an orphan we
+    cannot place is a real state, and saying so beats inventing a sentence for a marker
+    the researcher is about to go looking for.
+    """
+    section_title: str | None = None
+    snippet: str | None = None
+
+    for section in result.document.sections:
+        if section.id == orphan.section_id:
+            section_title = section.title
+        for block in section.blocks:
+            for span in block.spans:
+                if span.id == orphan.span_id:
+                    snippet = span.text
+                    # The span's own section wins over an id match, so a snippet and its
+                    # heading always describe the same place.
+                    section_title = section.title
+        if snippet is not None and section_title is not None:
+            break
+
+    return {"snippet": snippet, "section_title": section_title}
+
+
 def build_parse_report(result: IngestResult) -> dict[str, Any]:
     """The parse-inspector payload: every reference, every orphan, and the tier counts."""
     counts = result.tier_counts()
@@ -390,6 +420,11 @@ def build_parse_report(result: IngestResult) -> dict[str, Any]:
                 "span_id": orphan.span_id,
                 "page": orphan.page,
                 "reason": orphan.reason,
+                # Resolved from the IR rather than left to the client. This is the one
+                # tier with no reference to show, so the card shows the sentence with the
+                # marker picked out inside it — the researcher has to find this in their
+                # manuscript, and an id alone does not locate anything.
+                **_orphan_location(result, orphan),
             }
             for orphan in result.parsed.orphan_markers
         ],

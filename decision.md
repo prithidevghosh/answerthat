@@ -625,3 +625,60 @@ user with its real text — and a false quarantine costs far less than a fabrica
 **Consequences.** A single over-eager expansion (`Proc.` → `Proceedings`) costs the whole entry.
 Observed in testing and accepted: those entries reach the arbiter as unresolved and can still be
 recovered from the raw string by an external match.
+
+---
+
+## ADR-028 — Provider disagreement is data, not corruption
+
+**Status:** Accepted (amends HR-1's scope; supersedes nothing)
+
+**Context.** ADR-025 makes a matching DOI identity, so `mint_source_id` deliberately maps every
+provider that resolves the same DOI onto one `source_id` — the second `put()` is meant to *enrich*
+the first, which is why the store is keyed `(source_id, version)`. It never worked. `_merge_append_only`
+treated any differing value as an overwrite attempt and raised `AppendOnlyViolation`, which nothing
+catches, so one reference killed the whole ingest.
+
+Measured against 61 cached provider responses from a real 40-reference paper: 87 distinct
+`source_id`s, 4 described by more than one provider, and **4 of 4 would raise — a 100% collision
+rate. Not one row in the store had ever reached version 2.** The enrichment path had never once
+executed. Normalizing the obvious dialect differences (Crossref's `journal-article`, the per-provider
+`custom` bag) was simulated and fixes **0 of the 4**: what remains is providers genuinely disagreeing
+— S2 calls an ICASSP paper `paper-conference` where OpenAlex calls it `article-journal`, S2 has the
+fuller title, they differ on publication year by one, and each returns its own canonical URL.
+
+**Decision.** Differing values are no longer uniformly fatal. Three classes, handled differently:
+
+* **Identity and provenance** — `DOI`, and an abstract that is already stored from a real response.
+  A change here is still `AppendOnlyViolation`, still fatal, still uncatchable. This is the part of
+  HR-1 that makes fabrication structurally impossible and it is untouched.
+* **Provider-specific and mutable fields** — `citation_count`, `crossref_score`, `is_open_access`,
+  `raw_author_names`. Namespaced under `custom.providers.<name>` and never compared. A citation
+  count is a measurement that changes between two reads of the same record; storing it as a value
+  that may never change was a category error.
+* **Descriptive fields** — title, author, publisher, container-title, type, issued, URL. A
+  difference **appends a version** recording both readings with the provenance of each. The
+  first-stored value stays canonical; the alternative is preserved beside it.
+
+**Reasoning.** The store was being used as a reconciliation point, and it is not one — `Arbiter`
+is, scoring `0.6·title_sim + 0.2·year_match + 0.2·first_author_sim` against an accept threshold.
+Two mechanisms were deciding the same question and the store's veto fired first, before the
+arbiter's judgment could mean anything. A second provider describing a paper differently is
+additional information, not an attempt to corrupt the first.
+
+The first-stored value stays canonical deliberately: a finding's quote may already have been
+substring-checked against it, and silently promoting a "better" title would move ground the
+verifier already stood on. Choosing between readings stays with the arbiter, which has the
+agreement score to do it with; the store's job is to lose nothing.
+
+**Consequences.** Records now reach version 2+, which is what the composite key was always for.
+A reference where providers disagree no longer fails the paper. The disagreements are retained and
+are the obvious raw material for showing a reviewer *why* two sources describe one work
+differently, which we do not do yet.
+
+`source_store` gains a `disagreements` column. A fresh database gets it from `create_all()`; an
+existing one took a single additive `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, applied by hand
+rather than by a `db-reset` because dropping the table would have orphaned the `source_id`s that
+already-parsed documents point at. This does not reopen ADR-020: the exception is *additive DDL
+with a default*, which cannot lose data and cannot fail against existing rows. A column being
+dropped, renamed or retyped is still the Alembic conversation ADR-020 defers, and still needs its
+own decision.

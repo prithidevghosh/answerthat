@@ -105,6 +105,27 @@ def _s2_type(paper: dict[str, Any]) -> str:
     return "article-journal"
 
 
+def _provider_facts(provider: str, **facts: Any) -> dict[str, Any] | None:
+    """Per-provider values, filed under the provider that said them. ADR-028.
+
+    Two kinds of thing end up here, and neither is a property of the *work*:
+
+    * **Measurements that change.** A citation count read today and read next month are
+      both correct and different. Storing one as a value that may never change was a
+      category error, and it is what made Crossref's 164 collide with OpenAlex's 349.
+    * **A provider's own rendering.** `raw_author_names` is how that provider spelled the
+      authors, kept so a bad name split stays auditable. Two providers spelling them
+      differently is expected, not a contradiction.
+
+    Namespacing means the store's key-by-key merge can never see them as rivals: each
+    provider writes under its own key and the others are simply absent. Identifiers stay
+    flat above — those *are* stable facts about the work, and `extract_identifiers` reads
+    them from there.
+    """
+    pruned = {k: v for k, v in facts.items() if v not in (None, "", [], {})}
+    return {provider: pruned} if pruned else None
+
+
 def s2_paper_to_csl(paper: dict[str, Any]) -> dict[str, Any]:
     external = paper.get("externalIds") or {}
     journal = paper.get("journal") or {}
@@ -127,8 +148,11 @@ def s2_paper_to_csl(paper: dict[str, Any]) -> dict[str, Any]:
                 "s2_corpus_id": str(paper["corpusId"]) if paper.get("corpusId") else None,
                 "arxiv_id": external.get("ArXiv"),
                 "pmid": str(external["PubMed"]) if external.get("PubMed") else None,
-                "citation_count": paper.get("citationCount"),
-                "raw_author_names": [a.get("name") for a in authors if a.get("name")],
+                "providers": _provider_facts(
+                    "semantic_scholar",
+                    citation_count=paper.get("citationCount"),
+                    raw_author_names=[a.get("name") for a in authors if a.get("name")],
+                ),
             }
         ),
     }
@@ -137,6 +161,34 @@ def s2_paper_to_csl(paper: dict[str, Any]) -> dict[str, Any]:
 
 # --------------------------------------------------------------------------- OpenAlex
 
+
+#: Crossref publishes its *own* type vocabulary, not CSL's — `journal-article` where CSL
+#: says `article-journal`, `proceedings-article` where CSL says `paper-conference`. It was
+#: being passed through unmapped, which put non-CSL values in the store and rendered
+#: wrongly through citeproc (HR-4). Sharing `_OPENALEX_TYPE_TO_CSL` would be an accident
+#: waiting to happen — the two vocabularies overlap but are not the same — so it is spelled
+#: out separately.
+_CROSSREF_TYPE_TO_CSL = {
+    "journal-article": "article-journal",
+    "proceedings-article": "paper-conference",
+    "book-chapter": "chapter",
+    "book-part": "chapter",
+    "book-section": "chapter",
+    "book": "book",
+    "monograph": "book",
+    "edited-book": "book",
+    "reference-book": "book",
+    "posted-content": "article",
+    "dissertation": "thesis",
+    "report": "report",
+    "report-component": "report",
+    "dataset": "dataset",
+    "journal-issue": "article-journal",
+    "proceedings": "paper-conference",
+    "standard": "report",
+    "peer-review": "review",
+    "other": "article-journal",
+}
 
 _OPENALEX_TYPE_TO_CSL = {
     "article": "article-journal",
@@ -188,15 +240,21 @@ def openalex_work_to_csl(work: dict[str, Any]) -> dict[str, Any]:
         "publisher": source.get("host_organization_name"),
         "custom": _prune(
             {
+                # Identifiers stay flat: they are stable facts about the work, each
+                # provider contributes different ones, and `identity.extract_identifiers`
+                # reads them from here.
                 "openalex_id": normalize_openalex_id(work.get("id") or ids.get("openalex")),
                 "pmid": _tail(ids.get("pmid")),
                 "arxiv_id": _arxiv_from_openalex(work),
-                "citation_count": work.get("cited_by_count"),
-                "is_open_access": (work.get("open_access") or {}).get("is_oa"),
-                "raw_author_names": [
-                    a.get("raw_author_name") or (a.get("author") or {}).get("display_name")
-                    for a in authorships
-                ],
+                "providers": _provider_facts(
+                    "openalex",
+                    citation_count=work.get("cited_by_count"),
+                    is_open_access=(work.get("open_access") or {}).get("is_oa"),
+                    raw_author_names=[
+                        a.get("raw_author_name") or (a.get("author") or {}).get("display_name")
+                        for a in authorships
+                    ],
+                ),
             }
         ),
     }
@@ -244,7 +302,9 @@ def crossref_item_to_csl(item: dict[str, Any]) -> dict[str, Any]:
             authors.append({"literal": person["name"]})
 
     csl: dict[str, Any] = {
-        "type": item.get("type") or "article-journal",
+        "type": _CROSSREF_TYPE_TO_CSL.get(
+            (item.get("type") or "").lower(), "article-journal"
+        ),
         "title": _first(item.get("title")),
         "author": authors,
         "issued": _issued(year),
@@ -258,8 +318,11 @@ def crossref_item_to_csl(item: dict[str, Any]) -> dict[str, Any]:
         "ISSN": _first(item.get("ISSN")),
         "custom": _prune(
             {
-                "crossref_score": item.get("score"),
-                "citation_count": item.get("is-referenced-by-count"),
+                "providers": _provider_facts(
+                    "crossref",
+                    crossref_score=item.get("score"),
+                    citation_count=item.get("is-referenced-by-count"),
+                ),
             }
         ),
     }
