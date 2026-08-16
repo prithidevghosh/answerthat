@@ -304,6 +304,23 @@ tight end of the spacing scale instead of stepping up with viewport height as th
 them does. **Add a line here and re-measure.** The route caption goes first — the cartouches' own
 second lines already name the difference — and crushing the spacing is the wrong trade.
 
+**Width is the other half of that budget, and the open field's bounds are not the constraint.**
+§4's field (x 25–72%) comes from a coarse 12×7 grid; the only region sampled properly is the
+**centre column, x 36–64%**, which is where the single cartouche has always sat. The pair first
+shipped at 526px against the cartouche's 364px, putting its edges at x 31–69% — inside the field,
+outside the measured column. Photographing the plate behind it and reading 5th-percentile
+luminance shows the cost at 1280×720: the left plaque landed on a tree at luminance 0.416 against
+0.877 for the right one, and **its border measured 1.79:1 against the 3:1 an interactive edge
+requires**. The text still cleared, because `--text-primary` is very dark — but the frame dissolved
+into the foliage, which is the entire cartouche idiom gone on one of two choices, and made two
+equal options look unequal.
+
+So the pair is held to the measured column at `clamp(292px, 28vw, 420px)` and never grows past it.
+Both plaques then read 0.877 / 3.56:1 at every width tested, and the threshold shifts by ~56px
+rather than 162px when a file is dropped — nearly the "same footprint" the in-progress state has
+always kept. Both plaques are `whitespace-nowrap` and equal height: a pair of unequal plaques reads
+as one being recommended, and neither of these is.
+
 **Parse inspector (Pl. I).** Two columns inside the content column: document structure left,
 references right. A count strip across the top: `38 resolved · 4 parsed, not found · 2 could not
 parse · 1 orphan marker`, with the numerals in Bodoni at headline size. **Those counts are the

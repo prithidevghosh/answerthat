@@ -357,6 +357,31 @@ const ROUTES: { flow: Flow; name: string; line: string }[] = [
  * **If you add a line here, re-measure in a browser.** The route caption is the
  * first thing to cut — the cartouches' own second lines already name the
  * difference. Crushing the spacing is the wrong trade.
+ *
+ * THE WIDTH is the other half of the same budget, and it was got wrong first
+ * time round. The pair ran 526px against the single cartouche's 364px, which
+ * put its outer edges at x 31%–69% — inside §4's open field (25–72%) but
+ * *outside the column that was actually measured*, x 36–64%. The field's bounds
+ * come from a coarse 12x7 grid; only the centre column was sampled properly.
+ * Photographing the plate behind the pair and reading the 5th-percentile
+ * luminance says what that costs:
+ *
+ *   viewport     Guided plaque        Agentic plaque
+ *   1280x720   lum 0.416, rule 1.79:1   lum 0.877, rule 3.56:1
+ *   1440x900   lum 0.862, rule 3.50:1   lum 0.877, rule 3.56:1
+ *   1920x1080  lum 0.877, rule 3.56:1   lum 0.877, rule 3.56:1
+ *
+ * At 1280x720 the left plaque was sitting on a tree. Its text still cleared —
+ * `--text-primary` is very dark — but its **border measured 1.79:1 against the
+ * 3:1 an interactive edge requires**, so the frame dissolved into the foliage
+ * and the cartouche stopped reading as a cartouche at all. That is the whole
+ * idiom gone, on one of the two choices, which also made the two options look
+ * unequal when they are not.
+ *
+ * So the pair is held to the measured column — 28% of viewport width, which is
+ * exactly x 36–64% — and never grows past it. That also nearly restores the
+ * "same footprint" property the single cartouche had: the threshold now shifts
+ * by at most ~56px when a file is dropped instead of 162px.
  */
 function Fork({
   progress,
@@ -374,10 +399,18 @@ function Fork({
       <fieldset className="w-full border-0 p-0">
         <legend className="sr-only">How would you like to work on this paper?</legend>
 
-        {/* Stacked below 900px, where the frontispiece is a foot band and the
-            content runs on plain ivory — there is room, and two 250px plaques
-            side by side would be too narrow to set type in. */}
-        <div className="flex flex-col items-center gap-3 min-[900px]:flex-row min-[900px]:justify-center min-[900px]:gap-4">
+        {/*
+          Stacked below 900px, where the frontispiece is a foot band and the
+          content runs on plain ivory — there is room, and two plaques this
+          narrow side by side would be too tight to set type in.
+
+          Above it, the pair is capped at 28vw: the measured centre column, and
+          the only part of the plate whose luminance was ever sampled properly.
+          The floor keeps the second lines on one line at small widths; the
+          ceiling stops the pair drifting back out over the trees on a wide
+          screen. Both were checked in a browser — see the table above.
+        */}
+        <div className="mx-auto flex w-full flex-col items-center gap-3 min-[900px]:w-[clamp(292px,28vw,420px)] min-[900px]:flex-row min-[900px]:justify-center min-[900px]:gap-3">
           {ROUTES.map((route) => {
             const isChosen = chosen === route.flow;
             return (
@@ -386,7 +419,7 @@ function Fork({
                 type="button"
                 disabled={chosen !== null}
                 onClick={() => onChoose(route.flow)}
-                className={`group relative flex h-[74px] w-full flex-col items-center justify-center border px-5 transition-colors duration-ink ease-ink min-[900px]:w-[clamp(196px,18vw,250px)] ${
+                className={`group relative flex h-[74px] w-full flex-col items-center justify-center border px-3 transition-colors duration-ink ease-ink min-[900px]:min-w-0 min-[900px]:flex-1 ${
                   isChosen
                     ? 'border-cobalt'
                     : chosen
@@ -403,10 +436,15 @@ function Fork({
                       : 'border-cobalt/25 group-hover:border-cobalt/40'
                   }`}
                 />
-                <span className="block font-display text-lg leading-tight tracking-[-0.01em] text-primary">
+                <span className="block whitespace-nowrap font-display text-lg leading-tight tracking-[-0.01em] text-primary">
                   {route.name}
                 </span>
-                <span className="mt-1 block font-ui text-2xs text-secondary">{route.line}</span>
+                {/* `whitespace-nowrap` on both: a second line that wrapped would
+                    make one plaque taller than the other, and a pair of unequal
+                    plaques reads as one being the recommended choice. */}
+                <span className="mt-1 block whitespace-nowrap font-ui text-2xs text-secondary">
+                  {route.line}
+                </span>
               </button>
             );
           })}
