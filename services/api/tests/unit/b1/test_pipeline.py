@@ -211,8 +211,54 @@ async def test_style_detection_runs_over_the_reconciled_records(tei_xml: str) ->
     result = await _ingest(tei_xml, style=True)
     assert result.style is not None, result.style_error
     assert result.style.marker_family.family == "numeric"
+    # Unambiguous here, so the persisted style is the detected one. The tie case is
+    # ADR-030 policy and has its own test below.
+    assert result.style.ambiguous is False
     assert result.document.metadata.style_id == result.style.style_id
-    assert result.document.metadata.style_ambiguous == result.style.ambiguous
+    assert result.document.metadata.style_ambiguous is False
+
+
+async def test_an_ambiguous_style_still_persists_the_closest_candidate(
+    tei_xml: str, monkeypatch
+) -> None:
+    """ADR-030. The detector reports a tie as `style_id=None`; the pipeline must not
+    write that through.
+
+    It used to, and because export re-renders the whole bibliography through citeproc
+    (HR-4), a null style made the document permanently unexportable — for a distinction
+    between two styles so close that scoring could not separate them. The closest
+    candidate is persisted and `style_ambiguous` stays set, so the export screen can
+    render *and* disclose that the call was close.
+    """
+    from app.parsing import pipeline as pipeline_module
+    from app.parsing.style import MarkerFamilyVerdict, StyleDetectionResult, StyleScore
+
+    tie = StyleDetectionResult(
+        style_id=None,
+        score=0.474,
+        similarity=0.526,
+        ambiguous=True,
+        marker_family=MarkerFamilyVerdict(
+            family="author_date", numeric=0, author_date=12, unclassifiable=0, confidence=1.0
+        ),
+        candidates=[
+            StyleScore("apa", "APA Style 7th edition", 0.474, 0.526, 12),
+            StyleScore("chicago-author-date", "Chicago", 0.489, 0.511, 12),
+        ],
+        compared=12,
+        margin=0.015,
+        reason="apa (0.474) and chicago-author-date (0.489) are within 0.05 of each other.",
+    )
+    monkeypatch.setattr(pipeline_module, "detect_style", lambda *a, **k: tie)
+
+    result = await _ingest(tei_xml, style=True)
+
+    # The detector's own verdict is untouched — it still reports that it could not tell.
+    assert result.style.style_id is None
+    assert result.style.ambiguous is True
+    # The document, however, is exportable.
+    assert result.document.metadata.style_id == "apa"
+    assert result.document.metadata.style_ambiguous is True
 
 
 @pytest.mark.skipif(not pandoc_available(), reason="pandoc is not installed")

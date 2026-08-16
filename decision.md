@@ -785,3 +785,55 @@ An orphan-marker anchor now travels through detach → transform → reattach li
 no sources it renders in the edit console as its anchor id rather than a citation label, which
 is honest but plain, and is the obvious thing to improve when orphan markers get first-class
 treatment in the UI.
+
+---
+
+## ADR-030 — An ambiguous style is disclosed, not blocking
+
+**Status:** Accepted (amends the "user must pick" clause of goal.md CP-3)
+
+**Context.** Style detection scores the paper's raw reference strings against each candidate
+`.csl` and, when the top two land within `STYLE_AMBIGUOUS_DELTA`, returns `ambiguous` with
+`style_id=None` rather than guessing. The ingest pipeline then wrote that `None` straight onto
+`document.metadata.style_id`.
+
+Export re-renders every citation and the whole bibliography through citeproc (HR-4), so it needs
+a style. With `style_id` null it raised `ExportFailure`, and a paper whose style could not be
+separated from a near neighbour was **permanently unexportable** — the core deliverable of the
+product, unreachable, for a formatting distinction the user very likely does not care about.
+
+The escape hatch was the picker on the parse screen. Two problems. It is reachable only through
+the parse report, which is held in-process and dies on an API restart, taking the only route to
+a style with it. And it asked the user to arbitrate a question they had no way to answer: the API
+sent the same static six-style list for every document, never the two candidates that actually
+tied or their scores.
+
+Measured on a real 38-anchor paper (`doc-a971392fdabc`): author-date markers throughout, so
+marker-family narrowing had already eliminated the four numeric styles. The tie was APA against
+Chicago author-date at 0.474. Both render in-text citations identically; the entire difference is
+punctuation and field order in the reference list.
+
+**Decision.** Detection stays honest and unchanged — a tie still returns `style_id=None`,
+`ambiguous=True`, with both candidates scored. What changes is the *policy* applied to that
+measurement, which now lives at the ingest boundary rather than inside the detector:
+
+1. The pipeline persists the **closest candidate** as `metadata.style_id` even on a tie, and
+   leaves `style_ambiguous=True` next to it. The document is always self-sufficient: export
+   works from Postgres alone, with no dependency on a live parse report.
+2. `ExportManifest` carries `style_uncertain`, and the export screen states which style it is
+   rendering in and that the call was close, with the alternatives one click away.
+3. A user's explicit choice clears `style_ambiguous` — it is an answer, not a measurement, so no
+   confidence score is reported beside it.
+
+**Why not guess silently.** Considered and rejected. A reference list quietly reformatted into a
+style the author did not write in is precisely the "quietly rewrites their paper into something
+they no longer recognize" failure the product exists to avoid. The guess is fine; the guess
+*undisclosed* is not. HR-3 is satisfied by saying what we did and how sure we were, not by
+refusing to act.
+
+**Consequences.** Export is never blocked by a style question. goal.md CP-3's "Top-two within
+0.05 → returns `ambiguous`, user must pick" is now "→ returns `ambiguous`, closest match is used
+and disclosed, user may override" — the detector's contract is unchanged, so the CP-3 bullets
+about scoring, the shortlist and the exposed numeric score all still hold as written. **goal.md
+is owner-edited, and that one clause needs amending to match.** Logged in memory.md under
+Interface Requests / Blockers.

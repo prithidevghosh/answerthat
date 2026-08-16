@@ -981,6 +981,7 @@ export const EXPORT_MANIFEST: ExportManifest = {
   ],
   bibliography_entries: COUNTS.resolved,
   style_id: 'ieee',
+  style_uncertain: false,
   exportable: true,
   blocked_reason: null,
 };

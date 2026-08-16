@@ -1,18 +1,34 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Plate } from '@/components/Plate';
 import { Seal } from '@/components/Seal';
 import { RuleWithFleuron } from '@/components/Ornament';
 import { getClient, USING_FIXTURES } from '@/lib/api/client';
-import { styleName } from '@/components/StyleBanner';
 import type { ExportManifest } from '@/lib/api/types';
 
 const PLACEHOLDER_NOUN: Record<string, [string, string]> = {
   figure: ['figure', 'figures'],
   table: ['table', 'tables'],
   equation: ['equation', 'equations'],
+};
+
+/**
+ * The ids the API actually serves, from `app/export/styles.py`.
+ *
+ * Kept here rather than reusing `styleName` from StyleBanner, whose table is
+ * keyed on `acm-sig-proceedings` — the *filename* — where the API's id is `acm`,
+ * so ACM rendered as the raw slug. This list doubles as the change control's
+ * options, and an option whose id the API rejects is worse than a bare slug.
+ */
+const STYLE_LABEL: Record<string, string> = {
+  apa: 'APA 7th edition',
+  ieee: 'IEEE',
+  acm: 'ACM (SIG Proceedings)',
+  nature: 'Nature',
+  'chicago-author-date': 'Chicago (author–date)',
+  vancouver: 'Vancouver',
 };
 
 export function ExportPanel({ docId, manifest }: { docId: string; manifest: ExportManifest }) {
@@ -45,12 +61,22 @@ export function ExportPanel({ docId, manifest }: { docId: string; manifest: Expo
                 />
                 <Stat
                   label="Citation style"
-                  // Detection ran; it declined to pick between two near-tied
-                  // candidates. "Not detected" would misreport that as a failure.
-                  value={manifest.style_id ? styleName(manifest.style_id) : 'Not chosen yet'}
+                  value={manifest.style_id ? STYLE_LABEL[manifest.style_id] ?? manifest.style_id : 'None recorded'}
                 />
                 <Stat label="Format" value="LaTeX (.tex)" />
               </dl>
+
+              {/*
+                ADR-030. Export no longer waits on a style question — detection's
+                closest match is used. But "closest match" is not "identified", and
+                the user is the only one who can tell us we got it wrong, so the
+                close call is stated here rather than left in a log.
+              */}
+              <StyleControl
+                docId={docId}
+                styleId={manifest.style_id}
+                uncertain={manifest.style_uncertain}
+              />
 
               <div className="mt-10">
                 {/*
@@ -99,12 +125,15 @@ export function ExportPanel({ docId, manifest }: { docId: string; manifest: Expo
                       {manifest.blocked_reason ??
                         'The API reported that this document cannot be rendered yet.'}
                     </p>
-                    <Link
-                      href={`/documents/${docId}/parse`}
-                      className="mt-5 inline-flex items-center gap-3 rounded border border-sepia/45 bg-plate px-6 py-3 font-ui text-xs text-primary transition-colors duration-ink ease-ink hover:bg-sepia/[0.07]"
-                    >
-                      Choose a citation style
-                    </Link>
+                    {/*
+                      The chooser is already on this screen, above. Sending the user
+                      to the parse page for it was a dead end in the one case that
+                      lands here: an ingest report the API no longer holds takes the
+                      parse screen down with it, picker included.
+                    */}
+                    <p className="mt-4 font-ui text-2xs text-muted">
+                      Use the style buttons above — the export runs as soon as one is set.
+                    </p>
                   </div>
                 )}
               </div>
@@ -186,6 +215,100 @@ export function ExportPanel({ docId, manifest }: { docId: string; manifest: Expo
         </aside>
       </div>
     </main>
+  );
+}
+
+/**
+ * States which style the export will render in, and lets the user overrule it.
+ *
+ * Only speaks up when it has something to say: a confidently detected style is
+ * already shown in the stat block above, and repeating it as a warning would
+ * train the user to ignore the times it matters.
+ */
+function StyleControl({
+  docId,
+  styleId,
+  uncertain,
+}: {
+  docId: string;
+  styleId: string | null;
+  uncertain: boolean;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function choose(next: string) {
+    setSaving(next);
+    setError(null);
+    try {
+      await getClient().chooseStyle(docId, next);
+      setOpen(false);
+      // The manifest is fetched server-side, so re-render the route rather than
+      // patching local state — otherwise the download link and the label could
+      // disagree about which style the file is in.
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  if (!uncertain && !open && styleId) {
+    return (
+      <p className="mt-5 font-ui text-2xs text-muted">
+        Rendering in {STYLE_LABEL[styleId] ?? styleId}.{' '}
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="underline decoration-hair underline-offset-2 transition-colors duration-ink ease-ink hover:text-primary"
+        >
+          Change
+        </button>
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-6 rounded border border-sepia/40 bg-sepia/[0.05] px-5 py-4">
+      {uncertain && styleId && (
+        <>
+          <span className="inline-flex items-center gap-2 font-ui text-xs font-medium text-sepia">
+            <Seal kind="half" size={17} />
+            Exporting in {STYLE_LABEL[styleId] ?? styleId} — this was a close call
+          </span>
+          <p className="measure mt-3 text-xs leading-relaxed text-secondary">
+            We render your references through each candidate style and compare the result to the
+            raw strings in your paper. Two styles scored within 0.05 of each other, so we used the
+            closer one. Your in-text citations read the same either way; the difference is in the
+            reference list. If it is wrong, change it here.
+          </p>
+        </>
+      )}
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {Object.entries(STYLE_LABEL).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            disabled={saving !== null || id === styleId}
+            onClick={() => choose(id)}
+            className={`rounded border px-4 py-2 font-ui text-2xs transition-colors duration-ink ease-ink disabled:opacity-50 ${
+              id === styleId
+                ? 'border-indigo/45 bg-indigo/[0.06] text-indigo'
+                : 'border-sepia/40 text-primary hover:bg-sepia/[0.07]'
+            }`}
+          >
+            {saving === id ? 'Saving…' : label}
+            {id === styleId && <span className="ml-2 text-muted">in use</span>}
+          </button>
+        ))}
+      </div>
+
+      {error && <p className="mt-3 font-ui text-2xs text-madder">{error}</p>}
+    </div>
   );
 }
 

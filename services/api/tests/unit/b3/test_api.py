@@ -239,17 +239,33 @@ def test_the_export_manifest_route_exists_and_describes_the_download(base_docume
 
 
 def test_a_document_with_no_style_reports_the_export_as_blocked(base_document, sources):
-    """HR-3. Style detection returns `ambiguous` rather than guessing (CP-3), so a paper
-    can sit at the export screen with no style — and the exporter then refuses. The
-    manifest has to say so *before* the click, or the refusal reaches the user as a
-    broken download instead of as the decision it is."""
+    """HR-3. Post ADR-030 a style is always recorded, so reaching here means detection
+    never completed — a real blocker. The manifest has to say so *before* the click, or
+    the exporter's refusal arrives as a broken download instead of a stated reason."""
     base_document.metadata.style_id = None
     client, _services, _documents = build_client(base_document, sources)
 
     body = client.get(f"/api/documents/{base_document.doc_id}/export/manifest").json()
     assert body["style_id"] is None
     assert body["exportable"] is False
-    assert "citation style" in body["blocked_reason"]
+    assert body["style_uncertain"] is False
+    assert "style detection never completed" in body["blocked_reason"]
+
+
+def test_a_tie_exports_in_the_closest_style_and_says_that_it_was_close(base_document, sources):
+    """ADR-030. The user's complaint, encoded: a paper whose style could not be separated
+    from a near neighbour was permanently unexportable, because the pipeline wrote the
+    detector's `None` straight onto the document. Now the closest match is used and the
+    export runs — but `style_uncertain` travels with it, so the screen can say so."""
+    base_document.metadata.style_id = "apa"
+    base_document.metadata.style_ambiguous = True
+    client, _services, _documents = build_client(base_document, sources)
+
+    body = client.get(f"/api/documents/{base_document.doc_id}/export/manifest").json()
+    assert body["style_id"] == "apa"
+    assert body["exportable"] is True, "a close call must not block the download"
+    assert body["blocked_reason"] is None
+    assert body["style_uncertain"] is True, "using a guess without disclosing it is HR-3"
 
 
 def test_an_export_refusal_is_a_409_with_the_reason_not_a_bare_500(base_document, sources):
@@ -289,11 +305,13 @@ def test_choosing_a_style_persists_it_onto_the_stored_document(base_document, so
     # Read it back off the store the exporter uses, not off the style service's reply.
     head = asyncio.run(documents.get(doc_id))
     assert head.metadata.style_id == "ieee"
+    # An explicit choice is an answer, not a measurement: it clears the close call.
     assert head.metadata.style_ambiguous is False
 
     manifest = client.get(f"/api/documents/{doc_id}/export/manifest").json()
     assert manifest["style_id"] == "ieee"
     assert manifest["exportable"] is True
+    assert manifest["style_uncertain"] is False
     assert manifest["blocked_reason"] is None
 
 

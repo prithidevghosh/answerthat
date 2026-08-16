@@ -273,10 +273,14 @@ async def export_manifest(
     style_id = document.metadata.style_id
     blocked_reason = None
     if not style_id:
+        # ADR-030 means a detected style is always recorded, tie or not. Reaching here
+        # means detection never ran or failed outright — a different condition, and one
+        # the user cannot fix by picking from a list, so it does not pretend otherwise.
         blocked_reason = (
-            "No citation style has been chosen for this document, so the bibliography "
-            "cannot be rendered. Style detection scored two candidates too close to call "
-            "and will not guess — choose one on the parse screen, then export."
+            "This document has no citation style recorded, which means style detection "
+            "never completed for it. Every citation and the whole bibliography are "
+            "re-rendered from a style file on export, so there is nothing to render "
+            "with. Choose a style below and the export will run."
         )
 
     return ExportManifest(
@@ -289,6 +293,7 @@ async def export_manifest(
         ],
         bibliography_entries=len(source_ids),
         style_id=style_id,
+        style_uncertain=bool(style_id) and document.metadata.style_ambiguous,
         exportable=blocked_reason is None,
         blocked_reason=blocked_reason,
     )

@@ -283,6 +283,11 @@ export interface ExportManifest {
   placeholder_blocks: { type: 'figure' | 'table' | 'equation'; count: number }[];
   bibliography_entries: number;
   style_id: string | null;
+  /**
+   * ADR-030: the style was used, but two candidates scored within the margin and
+   * detection could not separate them. Not an error — a disclosure.
+   */
+  style_uncertain: boolean;
   /** False when something must be decided before a .tex can be rendered at all. */
   exportable: boolean;
   /** Present exactly when `exportable` is false, in the API's own words. */

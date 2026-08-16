@@ -190,9 +190,20 @@ async def ingest_tei(
             # Surfaced, not swallowed: the document keeps no style and says why.
             result.style_error = str(exc)
         else:
-            parsed.document.metadata.style_id = result.style.style_id
-            parsed.document.metadata.style_confidence = result.style.similarity
-            parsed.document.metadata.style_ambiguous = result.style.ambiguous
+            # ADR-030. A tie is still a measurement: the closest match remains the best
+            # evidence we have about the style the paper was written in, and refusing to
+            # record it left every ambiguous paper permanently unexportable. Persist the
+            # closest candidate and keep `style_ambiguous` set, so the export screen can
+            # say which style it used and that the call was close. Detection itself stays
+            # honest — `result.style.style_id` is still None on a tie; choosing what to do
+            # about that is policy, and it lives here rather than in the detector.
+            detection = result.style
+            chosen = detection.style_id
+            if chosen is None and detection.candidates:
+                chosen = detection.candidates[0].style_id
+            parsed.document.metadata.style_id = chosen
+            parsed.document.metadata.style_confidence = detection.similarity
+            parsed.document.metadata.style_ambiguous = detection.ambiguous
 
     # HR-3, asserted on every ingest rather than only in a test.
     result.tier_counts().assert_invariant()

@@ -372,6 +372,15 @@ rather than silently reinterpreted; if you want the prefix everywhere, it needs 
 reset. Fixed by B2 in the same session; `uv run pytest tests/unit -q` → `594 passed`. Recorded
 because the failure mode (a test that passes per-directory and fails in CI) will recur. · 2026-08-16
 
+[OPEN] B3 → owner · goal.md CP-3 needs one clause amended · CP-3 reads "Top-two within 0.05 →
+returns `ambiguous`, user must pick". Per ADR-030 the pipeline now persists the closest candidate
+and discloses the close call, and the user may override — because `style_id=None` made every
+ambiguous paper permanently unexportable, and the picker that was supposed to rescue it lived on
+the parse screen, which dies with the in-process ingest report. The detector's contract is
+unchanged, so every other CP-3 bullet still holds verbatim; only the "user must pick" clause has
+drifted. goal.md is owner-edited and an agent may not touch it, hence this request. Decided by the
+project owner in session on 2026-08-16, ADR-030 records the reasoning. · 2026-08-16
+
 ---
 
 ## 6. Checkpoint evidence

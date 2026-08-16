@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Plate } from './Plate';
 import { Seal } from './Seal';
-import { DiffText } from './DiffText';
+import { SideBySideDiff } from './DiffText';
 import { AnchorSeals, type AnchorEntry } from './AnchorSeals';
 import type { AnchorDelta, EvaluatedChange } from '@/lib/api/types';
 import type { SourceRecord } from '@/lib/contracts';
@@ -111,15 +111,22 @@ export function ChangeCard({
 
       {spanDeltas.length > 0 && (
         <div className="mt-6">
-          <p className="font-ui text-2xs uppercase tracking-[0.12em] text-muted">Proposed change</p>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <p className="font-ui text-2xs uppercase tracking-[0.12em] text-muted">
+              Proposed change
+            </p>
+            <p className="font-ui text-2xs text-muted">
+              {spanDeltas.length} {spanDeltas.length === 1 ? 'sentence' : 'sentences'} touched ·
+              everything not shown is unchanged
+            </p>
+          </div>
           <div className="mt-3 space-y-3">
             {spanDeltas.map((span) => (
-              <div
+              <SideBySideDiff
                 key={span.span_id}
-                className="rounded border border-hair bg-paper-deep/50 px-5 py-4"
-              >
-                <DiffText before={span.before_text ?? ''} after={span.after_text ?? ''} />
-              </div>
+                before={span.before_text ?? ''}
+                after={span.after_text ?? ''}
+              />
             ))}
           </div>
         </div>
