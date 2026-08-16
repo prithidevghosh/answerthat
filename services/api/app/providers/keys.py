@@ -31,7 +31,7 @@ _WHERE: dict[str, str] = {
     "SEMANTIC_SCHOLAR_API_KEY": "free — request at https://www.semanticscholar.org/product/api",
     "OPENALEX_API_KEY": "free — register at https://openalex.org (keys mandatory since 2026-02-13)",
     "OPENALEX_MAILTO": "your contact email address — required for the polite pool",
-    "ANTHROPIC_API_KEY": "https://console.anthropic.com/settings/keys",
+    "OPENAI_API_KEY": "https://platform.openai.com/api-keys (ADR-015 — every LLM role uses it)",
 }
 
 
