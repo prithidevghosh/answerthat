@@ -49,10 +49,8 @@ These are load-bearing, not aspirational. `goal.md` states them; `decision.md` c
 
 ## Running it
 
-### Requirements
-
-Docker with ~6 GB free for the GROBID image, or for host development: Python 3.11+ with
-[`uv`](https://docs.astral.sh/uv/), Node 20+ with `pnpm`, and Pandoc on `PATH`.
+Everything runs in Docker. The only requirement is Docker with ~6 GB free for the GROBID image —
+no Python, Node, or Pandoc on your machine.
 
 ### 1. Configure
 
@@ -74,7 +72,7 @@ Fill in the three required keys. **The API will not start without them** — tha
 ### 2. Start
 
 ```bash
-docker compose up
+docker compose up --build
 ```
 
 Brings up five services:
@@ -93,46 +91,30 @@ something on your machine already owns it.
 
 Then open **http://localhost:3000** and drop in a PDF.
 
-### Development on the host
-
-Postgres, Redis, and GROBID still come from compose; the two apps run locally with reload.
+### 3. Everyday commands
 
 ```bash
-docker compose up -d postgres redis grobid
-
-# backend  → http://localhost:8000
-cd services/api
-uv sync
-uv run uvicorn --factory app.api.main:asgi --reload --port 8000
-
-# frontend → http://localhost:3000
-cd apps/web
-pnpm install
-pnpm dev          # predev copies packages/csl-styles into public/csl
+docker compose logs -f api        # follow the backend
+docker compose up --build -d      # rebuild and run detached
+docker compose down               # stop
+docker compose down -v            # stop, and wipe the database and uploaded PDFs
 ```
 
-Point the backend at the sidecars with `GROBID_URL=http://localhost:8070`,
-`DATABASE_URL=postgresql+asyncpg://answerthat:answerthat@localhost:5432/answerthat`, and
-`REDIS_URL=redis://localhost:6379/0`.
-
-To browse the UI with no API and no keys at all, run the frontend with
-`NEXT_PUBLIC_USE_FIXTURES=1`. Fixtures are opt-in and never the default: with the flag unset and the
-API down you get the configuration screen, not invented data that reads like a real review.
+`services/api/app/` and `packages/csl-styles/` are mounted into the containers, so editing a source
+file or a `.csl` is picked up without a rebuild. Rebuild when a dependency changes.
 
 ### Tests and checks
 
-```bash
-cd services/api
-uv run pytest tests/unit -q
-uv run ruff check app tests
-uv run mypy app
+They run inside the api container, which already has Pandoc and the dev tooling installed:
 
-cd apps/web
-pnpm typecheck && pnpm lint && pnpm build
+```bash
+docker compose exec api pytest tests/unit -q
+docker compose exec api ruff check app tests
+docker compose exec api mypy app
 ```
 
-The export and style-detection tests need Pandoc on `PATH`. CI is meant to run with
-`LLM_MODE=replay` so a missing recording fails the build rather than quietly hitting the network.
+CI is meant to run with `LLM_MODE=replay`, so a missing recording fails the build rather than
+quietly hitting the network.
 
 ---
 
@@ -194,6 +176,61 @@ the reported parsing metrics, committed `LLM_MODE=replay` recordings, and the th
 `ARBITER_ACCEPT` / `REPAIR_TRIGGER` / `REATTACH_ACCEPT`. Those thresholds are currently the values
 argued for in ADR-024, not values measured against a corpus. `memory.md` §6 records the per-checkpoint
 evidence, including what each one does and does not prove.
+
+## Known limitations
+
+Roughly in the order they would bother me if someone else were running this.
+
+- **Nothing is measured against real papers.** The unit suites prove the *guarantees* — a fabricated
+  `source_id` is rejected, a quote that isn't in the abstract kills the finding — but there is no
+  accuracy number anywhere. Reference recall, arbiter resolution rate and reattachment quality are
+  all unknown, and `ARBITER_ACCEPT = 0.85` / `REATTACH_ACCEPT = 0.72` are arguments from ADR-024,
+  not values swept against a corpus.
+- **No model call has ever been recorded.** Every test runs against scripted fakes, so
+  `LLM_MODE=replay` has nothing to replay and CI can't use it yet. The parts that depend on model
+  judgement rather than on code — whether the planner picks the right typed operation, how the
+  repair tier behaves on a genuinely mangled reference string — are untested.
+- **Jobs run inside the API process.** `arq` and Redis are wired and record job status, but ingest
+  and review actually run on `asyncio.create_task`. That means one process only, and a restart kills
+  in-flight work and takes the parse report with it — `/parse` then 404s for documents ingested
+  before the restart.
+- **Retrieval is one strategy short without a Semantic Scholar key.** S2 serves search and batch
+  from a pool that is closed to anonymous callers, not merely slow (ADR-010b), so a review runs
+  three candidate strategies instead of four and loses passage-level evidence. Findings are still
+  quote-backed; ranking is just worse. Keys are not currently being issued.
+- **Figures, tables and equations don't survive export.** They come out as visible placeholders
+  carrying their captions. Deliberate (ADR-008), but it means the exported `.tex` is not a drop-in
+  replacement for the original manuscript.
+- **Ranking reads the stored abstract directly.** If S2 had no licensed abstract, the record holds
+  its TLDR and the prefilter and reranker score the one-liner rather than OpenAlex's fuller text.
+  A ranking cost, not an honesty one — the verifier still reads the resolver's best abstract.
+- **Single user, no authentication** (ADR-023). Anyone who can reach the API can read and edit every
+  document.
+- **No migrations.** Tables come from `create_all()` at startup (ADR-020); the one schema change so
+  far was a hand-applied `ALTER TABLE`.
+- **No cost or latency figure.** There is a per-document token budget that raises when exceeded, but
+  nobody has written down what a full review of a real paper costs or how long it takes.
+- **The frontend has no tests** beyond typecheck, lint and build.
+
+## With more time
+
+In this order, because the first item makes the rest honest.
+
+1. **Build the golden set.** 5–8 real arXiv PDFs across IEEE, APA, ACM and Nature superscript,
+   hand-checked, with reference recall, field precision, arbiter resolution rate and mean round-trip
+   style similarity reported as numbers. Then sweep the three thresholds against it. Until this
+   exists, every quality claim in this README is a design argument rather than a result.
+2. **Record the model calls** and make CI run `LLM_MODE=replay`, so a cache miss fails the build
+   instead of quietly reaching the network.
+3. **Move ingest and review onto `arq` properly** and persist the parse report in Postgres, so a
+   restart is survivable and review can scale past a single process.
+4. **Route the prefilter and reranker through `AbstractResolver`** instead of reading
+   `record.abstract`, which fixes the TLDR ranking cost above.
+5. **Show provider disagreements in the UI.** The store already keeps them (ADR-028) and nothing
+   displays them — "these two databases describe this work differently" is exactly what a reviewer
+   wants to see.
+6. **End-to-end tests**: upload → parse → review → edit → approve → export, against recorded
+   fixtures, plus a frontend suite worth the name.
 
 ## License
 
