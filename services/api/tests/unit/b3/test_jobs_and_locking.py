@@ -155,6 +155,71 @@ def test_the_job_view_narrows_to_the_appendix_a_contract():
 
 
 # ===========================================================================
+# ADR-022 — the uploaded PDF is on disk before the ingest starts
+# ===========================================================================
+
+
+class StubIngest:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def enqueue(self, doc_id: str, filename: str, payload: bytes) -> str:
+        self.calls.append(doc_id)
+        return f"job-{doc_id}"
+
+
+def upload_client(tmp_path, jobs, *, upload_dir=None) -> TestClient:
+    services = Services(
+        ingest=StubIngest(),
+        jobs=jobs,
+        upload_dir=upload_dir if upload_dir is not None else tmp_path,
+    )
+    return TestClient(create_app(services))
+
+
+@pytest.mark.asyncio
+async def test_the_pdf_is_written_to_the_volume_and_its_path_recorded(tmp_path):
+    """A crashed ingest must be retryable. Bytes that live only in a dead worker's memory
+    mean asking the researcher to upload their paper again for our fault (ADR-022)."""
+    jobs = InMemoryJobStore()
+    client = upload_client(tmp_path, jobs)
+
+    response = client.post(
+        "/api/documents", files={"file": ("paper.pdf", b"%PDF-1.7 fake", "application/pdf")}
+    )
+    assert response.status_code == 202
+    body = response.json()
+
+    written = tmp_path / f"{body['doc_id']}.pdf"
+    assert written.read_bytes() == b"%PDF-1.7 fake"
+
+    view = await jobs.get(body["job_id"])
+    assert view.upload_path == str(written)
+    assert view.kind == "ingest"
+
+
+def test_an_unwritable_upload_directory_fails_the_upload_rather_than_the_parse(tmp_path):
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("this is a file, so mkdir underneath it cannot succeed")
+
+    client = upload_client(tmp_path, InMemoryJobStore(), upload_dir=blocked / "uploads")
+    response = client.post(
+        "/api/documents", files={"file": ("paper.pdf", b"%PDF-1.7", "application/pdf")}
+    )
+    assert response.status_code == 507
+    assert "cannot be retried" in response.json()["detail"]
+
+
+def test_no_upload_directory_is_a_503_naming_it(tmp_path):
+    client = TestClient(create_app(Services(ingest=StubIngest(), jobs=InMemoryJobStore())))
+    response = client.post(
+        "/api/documents", files={"file": ("paper.pdf", b"%PDF-1.7", "application/pdf")}
+    )
+    assert response.status_code == 503
+    assert response.json()["component"] == "upload_dir"
+
+
+# ===========================================================================
 # ADR-021 — a moved head fails the commit rather than overwriting it
 # ===========================================================================
 

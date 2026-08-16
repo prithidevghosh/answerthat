@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from app.agent.executor import OperationExecutor
@@ -80,6 +81,9 @@ class Services:
     structured_model: StructuredModel | None = None
     fingerprints: FingerprintStore | None = None
     jobs: JobStore | None = None
+    upload_dir: Path | None = None
+    """Where uploaded PDFs land (ADR-022). Required to accept an upload at all: without
+    the bytes on disk, a crashed ingest cannot be retried and the paper is simply gone."""
     change_sets: ChangeSetStore | None = None
     band: ReattachmentBand | None = None
     """`REATTACH_ACCEPT` / `REATTACH_FLAG_FLOOR`, read from config at boot (ADR-024). No
@@ -151,6 +155,10 @@ _MISSING_HINTS = {
     "fingerprints": "B1's anchor_fingerprints side table (app/ir/fingerprints.py) is not wired",
     "band": "the reattachment band was not read from config — see ADR-024",
     "jobs": "the arq job queue is not connected",
+    "upload_dir": (
+        "UPLOAD_DIR is not configured, so an uploaded PDF has nowhere to be written and a "
+        "failed ingest could never be retried (ADR-022)"
+    ),
 }
 
 
@@ -170,6 +178,7 @@ def build_services() -> Services:
         settings=settings,
         change_sets=ChangeSetStore(),
         band=ReattachmentBand.from_settings(settings),
+        upload_dir=Path(settings.upload_dir),
     )
 
     _bind_sources(services, settings)

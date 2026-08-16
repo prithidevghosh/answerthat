@@ -53,6 +53,9 @@ class JobView(BaseModel):
     progress_current: int = 0
     progress_total: int = 0
     error: str | None = None
+    upload_path: str | None = None
+    """Where the uploaded PDF was written (ADR-022). Recorded so a failed ingest can be
+    retried from the bytes rather than from the researcher."""
     created_at: str
     updated_at: str
 
@@ -68,7 +71,9 @@ class JobView(BaseModel):
 
 
 class JobStore(Protocol):
-    async def create(self, *, job_id: str, kind: JobKind, doc_id: str) -> JobView: ...
+    async def create(
+        self, *, job_id: str, kind: JobKind, doc_id: str, upload_path: str | None = None
+    ) -> JobView: ...
     async def start(self, job_id: str) -> JobView | None: ...
     async def progress(self, job_id: str, current: int, total: int) -> JobView | None: ...
     async def succeed(self, job_id: str) -> JobView | None: ...
@@ -87,6 +92,7 @@ class AgentJobRow(Base):
     progress_current: Mapped[int] = mapped_column(Integer, default=0)
     progress_total: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    upload_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[str] = mapped_column(Text)
 
@@ -128,7 +134,9 @@ class PostgresJobStore:
         self._session_scope = session_scope
         self._stale_after = stale_after_seconds
 
-    async def create(self, *, job_id: str, kind: JobKind, doc_id: str) -> JobView:
+    async def create(
+        self, *, job_id: str, kind: JobKind, doc_id: str, upload_path: str | None = None
+    ) -> JobView:
         now = utcnow().isoformat()
         async with self._session_scope() as session:
             session.add(
@@ -137,6 +145,7 @@ class PostgresJobStore:
                     kind=kind,
                     doc_id=doc_id,
                     status=JobStatus.QUEUED.value,
+                    upload_path=upload_path,
                     created_at=now,
                     updated_at=now,
                 )
@@ -147,6 +156,7 @@ class PostgresJobStore:
             kind=kind,
             doc_id=doc_id,
             status=JobStatus.QUEUED,
+            upload_path=upload_path,
             created_at=now,
             updated_at=now,
         )
@@ -204,13 +214,16 @@ class InMemoryJobStore:
         self._jobs: dict[str, JobView] = {}
         self._stale_after = stale_after_seconds
 
-    async def create(self, *, job_id: str, kind: JobKind, doc_id: str) -> JobView:
+    async def create(
+        self, *, job_id: str, kind: JobKind, doc_id: str, upload_path: str | None = None
+    ) -> JobView:
         now = utcnow().isoformat()
         view = JobView(
             job_id=job_id,
             kind=kind,
             doc_id=doc_id,
             status=JobStatus.QUEUED,
+            upload_path=upload_path,
             created_at=now,
             updated_at=now,
         )
@@ -264,6 +277,7 @@ def _view(row: AgentJobRow) -> JobView:
         progress_current=row.progress_current or 0,
         progress_total=row.progress_total or 0,
         error=row.error,
+        upload_path=row.upload_path,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

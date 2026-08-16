@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
@@ -67,6 +68,8 @@ async def upload(request: Request, file: UploadFile) -> JobAccepted:
         )
 
     doc_id = f"doc-{uuid.uuid4().hex[:12]}"
+    stored_at = _persist(svc, doc_id, payload)
+
     job_id = await maybe_await(
         ingest.enqueue(
             doc_id=doc_id, filename=file.filename or f"{doc_id}.pdf", payload=payload
@@ -75,13 +78,42 @@ async def upload(request: Request, file: UploadFile) -> JobAccepted:
     # Recorded before anything can go wrong with it. A job that exists only inside a
     # worker's memory cannot be reported as failed once that worker is gone (ADR-022).
     if svc.jobs is not None:
-        await svc.jobs.create(job_id=job_id, kind="ingest", doc_id=doc_id)
+        await svc.jobs.create(
+            job_id=job_id, kind="ingest", doc_id=doc_id, upload_path=str(stored_at)
+        )
 
     return JobAccepted(
         job_id=job_id,
         doc_id=doc_id,
         poll=f"/api/documents/{doc_id}/parse-status",
     )
+
+
+def _persist(svc: Services, doc_id: str, payload: bytes) -> Path:
+    """Write the PDF to the mounted volume before the ingest starts (ADR-022).
+
+    Before, not after: the job may crash, and a retry needs the bytes. Holding them only
+    in the worker's memory means a failed parse is unrecoverable and the researcher is
+    asked to upload their paper again for a reason that is our fault.
+
+    A write failure is a failed upload, not a warning. Accepting the file and returning a
+    job id we cannot honour would be the most misleading possible answer.
+    """
+    directory = Path(svc.require("upload_dir"))
+    path = directory / f"{doc_id}.pdf"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=507,
+            detail=(
+                f"could not write the upload to {path}: {exc}. The file was not accepted — "
+                f"an ingest whose source bytes are gone cannot be retried, so this fails now "
+                f"rather than several minutes into parsing."
+            ),
+        ) from exc
+    return path
 
 
 @router.get("/{doc_id}/parse-status", response_model=ParseStatus)
