@@ -181,6 +181,88 @@ async def test_a_completed_review_replays_in_full_to_a_late_subscriber() -> None
     assert jobs.status("doc_1")["status"] == "complete"
 
 
+async def test_a_completed_review_is_replayed_rather_than_billed_again() -> None:
+    """The review screen auto-starts on mount, so every refresh called `start`.
+
+    `start` only skipped work while a job was still *running*, so a finished review was
+    re-run from scratch on every page load — a fresh pass over the whole paper against
+    the LLM and both providers, discarding findings the user had already read. The job
+    holds its event log, so returning it replays the feed for nothing.
+    """
+    pipeline_runs = []
+
+    def factory():
+        pipeline_runs.append(1)
+        return _scripted_pipeline(EVENTS)()
+
+    jobs = ReviewJobRunner(factory)
+    first = jobs.start("doc_1")
+    await jobs._jobs["doc_1"].task
+
+    second = jobs.start("doc_1")
+    assert second == first, "the completed job should be handed back, not superseded"
+    assert pipeline_runs == [1], "the pipeline must not run a second time"
+
+    replayed = [name for name, _ in [e async for e in jobs.stream("doc_1")]]
+    assert replayed.count("finding") == 2, "the user's findings survive the refresh"
+
+
+async def test_force_reruns_a_completed_review() -> None:
+    """Replay must not become a trap: asking for a fresh look is a real request."""
+    runs = []
+
+    def factory():
+        runs.append(1)
+        return _scripted_pipeline(EVENTS)()
+
+    jobs = ReviewJobRunner(factory)
+    jobs.start("doc_1")
+    await jobs._jobs["doc_1"].task
+
+    second = jobs.start("doc_1", force=True)
+    await jobs._jobs["doc_1"].task
+    assert runs == [1, 1], "force must actually re-run the pipeline"
+    assert jobs._jobs["doc_1"].job_id == second
+
+
+async def test_a_different_scope_is_a_different_question_and_reruns() -> None:
+    runs = []
+
+    def factory():
+        runs.append(1)
+        return _scripted_pipeline(EVENTS)()
+
+    jobs = ReviewJobRunner(factory)
+    jobs.start("doc_1", ["sec_a"])
+    await jobs._jobs["doc_1"].task
+
+    jobs.start("doc_1", ["sec_b"])
+    await jobs._jobs["doc_1"].task
+    assert runs == [1, 1], "a review of another section is not this review"
+
+
+async def test_a_failed_review_is_retried_rather_than_replayed() -> None:
+    """Handing back the same error forever is a dead end, not a cache."""
+    from app.core.contracts import ProviderRateLimited
+
+    runs = []
+
+    def factory():
+        runs.append(1)
+        return _scripted_pipeline(
+            [("finding", {"finding_id": "fnd_1"})],
+            fail_with=ProviderRateLimited("semantic_scholar throttled"),
+        )()
+
+    jobs = ReviewJobRunner(factory)
+    jobs.start("doc_1")
+    await jobs._jobs["doc_1"].task
+
+    jobs.start("doc_1")
+    await jobs._jobs["doc_1"].task
+    assert runs == [1, 1], "a failed review must be retried on the next request"
+
+
 async def test_a_reconnect_mid_review_loses_nothing() -> None:
     """The whole point of buffering: reconnect gets the backlog, then follows live."""
     gate = asyncio.Event()

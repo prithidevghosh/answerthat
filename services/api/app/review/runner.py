@@ -43,9 +43,14 @@ HEARTBEAT_SECONDS = 15.0
 class ReviewJob:
     """One document's review: its event log, its status, and its subscribers."""
 
-    def __init__(self, job_id: str, doc_id: str) -> None:
+    def __init__(
+        self, job_id: str, doc_id: str, section_ids: list[str] | None = None
+    ) -> None:
         self.job_id = job_id
         self.doc_id = doc_id
+        #: What this job was asked to cover, so a later request for a *different* scope
+        #: is not answered with this job's findings.
+        self.section_ids = section_ids
         self.status: JobStatus = "queued"
         self.error: str | None = None
         self.events: list[tuple[str, dict[str, Any]]] = []
@@ -109,17 +114,38 @@ class ReviewJobRunner:
 
     # ------------------------------------------------------------------ lifecycle
 
-    def start(self, doc_id: str, section_ids: list[str] | None = None) -> str:
+    def start(
+        self, doc_id: str, section_ids: list[str] | None = None, *, force: bool = False
+    ) -> str:
         """Launch the review in the background and return its `job_id`.
 
         Re-starting a document whose review is still running returns the existing
         `job_id` rather than racing a second pipeline against the same rate limiter.
+
+        A *completed* review of the same scope is also returned rather than re-run. The
+        job keeps its whole event log and `subscribe()` replays it, so the feed repopulates
+        for free. Without this, the review screen — which auto-starts on mount — billed a
+        fresh pass over the entire paper on every page load and every refresh, discarding
+        findings the user had already read. `force=True` is the deliberate re-run.
+
+        A failed job is never replayed: the user asked for a review and got an error, and
+        handing them that same error forever instead of retrying is not a cache, it is a
+        dead end. Same for a different `section_ids` scope, which is a different question.
         """
         existing = self._jobs.get(doc_id)
         if existing is not None and not existing.finished:
             return existing.job_id
+        if (
+            existing is not None
+            and not force
+            and existing.status == "complete"
+            and existing.section_ids == section_ids
+        ):
+            return existing.job_id
 
-        job = ReviewJob(job_id=f"rev_{uuid.uuid4().hex[:16]}", doc_id=doc_id)
+        job = ReviewJob(
+            job_id=f"rev_{uuid.uuid4().hex[:16]}", doc_id=doc_id, section_ids=section_ids
+        )
         self._jobs[doc_id] = job
         job.task = asyncio.create_task(self._run_job(job, section_ids))
         return job.job_id

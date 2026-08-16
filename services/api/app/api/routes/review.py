@@ -39,8 +39,11 @@ async def start_review(request: Request, doc_id: str, payload: ReviewRequest | N
     svc = services(request)
     runner = svc.require("review")
     section_ids = payload.section_ids if payload else None
+    force = payload.force if payload else False
 
-    job_id = await maybe_await(runner.start(doc_id=doc_id, section_ids=section_ids))
+    job_id = await maybe_await(
+        runner.start(doc_id=doc_id, section_ids=section_ids, force=force)
+    )
     # Recorded here so that a worker which dies mid-review has a row to be reported
     # failed against. Without one, the UI streams nothing forever and the user reads it
     # as "no findings" — the same false negative as ADR-010 (ADR-022, HR-3).

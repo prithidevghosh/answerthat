@@ -23,7 +23,12 @@ export function ParseInspector({
   sources: Record<string, SourceRecord>;
 }) {
   const [filter, setFilter] = useState<ConfidenceTier | 'all'>('all');
-  const [styleId, setStyleId] = useState(result.style?.style_id ?? 'ieee');
+  // The document's resolved style first. `result.style.style_id` is the detector's raw
+  // verdict and is null on a tie, which sent this to 'ieee' — numbering the bibliography
+  // of an author-date paper — for exactly the documents least able to survive the guess.
+  const [styleId, setStyleId] = useState(
+    result.document.metadata.style_id ?? result.style?.style_id ?? 'chicago-author-date',
+  );
 
   // One citeproc pass over the whole bibliography, always in document order, so
   // numeric styles number correctly and author-date styles disambiguate. Cards
@@ -80,7 +85,12 @@ export function ParseInspector({
           detected would be worse than showing none. */}
       {result.style && (
         <div className="mt-8">
-          <StyleBanner docId={docId} style={result.style} onChosen={setStyleId} />
+          <StyleBanner
+            docId={docId}
+            style={result.style}
+            inUse={result.document.metadata.style_id}
+            onChosen={setStyleId}
+          />
         </div>
       )}
 

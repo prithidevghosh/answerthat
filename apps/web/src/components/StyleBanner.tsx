@@ -28,10 +28,14 @@ export const styleName = (id: string) => STYLE_NAME[id] ?? id;
 export function StyleBanner({
   docId,
   style,
+  inUse,
   onChosen,
 }: {
   docId: string;
   style: StyleDetection;
+  /** The style actually applied to the document (ADR-030), which on a tie is the
+   *  detector's closest candidate rather than its null verdict. */
+  inUse?: string | null;
   onChosen: (styleId: string) => void;
 }) {
   const [saving, setSaving] = useState<string | null>(null);
@@ -56,14 +60,23 @@ export function StyleBanner({
       <Plate accent="sepia" className="px-6 py-6">
         <span className="inline-flex items-center gap-2 font-ui text-xs font-medium text-sepia">
           <Seal kind="half" size={17} />
-          Citation style is ambiguous — please choose
+          {inUse
+            ? `Rendering in ${styleName(inUse)} — this was a close call`
+            : 'Citation style is ambiguous — please choose'}
         </span>
 
+        {/*
+          ADR-030: a tie no longer blocks. The closest candidate is applied and said
+          out loud here, so this screen and the export screen tell the same story —
+          they used to disagree, one asking the user to choose while the other
+          reported a style already in use.
+        */}
         <p className="measure mt-3 text-xs leading-relaxed text-secondary">
           We render your references through each candidate style and compare the result to the raw
           strings in your document. Two styles scored within 0.05 of each other, which is too close
-          to call. Picking the wrong one would silently reformat your bibliography, so we would
-          rather ask.
+          to call{inUse ? ', so we used the closer one' : ''}. Picking the wrong one would
+          reformat your bibliography, so we would rather say so than let you find out in the
+          exported file.
         </p>
 
         <div className="mt-5 flex flex-wrap gap-3">
@@ -77,6 +90,9 @@ export function StyleBanner({
             >
               {saving === c.style_id ? 'Saving…' : styleName(c.style_id)}
               <span className="ml-2 font-mono text-2xs text-muted">{c.score.toFixed(2)}</span>
+              {c.style_id === inUse && (
+                <span className="ml-2 font-ui text-2xs text-indigo">in use</span>
+              )}
             </button>
           ))}
         </div>

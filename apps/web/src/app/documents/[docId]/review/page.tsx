@@ -48,7 +48,21 @@ export default async function ReviewPage({ params }: { params: Promise<{ docId: 
         title={parse.document.metadata.title}
         version={parse.document.version}
       />
-      <ReviewFeed docId={docId} styleId={parse.style?.style_id ?? 'ieee'} />
+      {/*
+        The document's style, then the detector's, then a last resort.
+
+        `parse.style.style_id` is the detector's raw verdict, which is null whenever two
+        candidates tied — so this read fell through to the hardcoded 'ieee' and rendered
+        every finding's citation as a bracketed number for a paper written in author-date.
+        The resolved style lives on the document: detection's closest match is persisted
+        there at ingest, and a user's explicit choice overwrites it.
+      */}
+      <ReviewFeed
+        docId={docId}
+        styleId={
+          parse.document.metadata.style_id ?? parse.style?.style_id ?? 'chicago-author-date'
+        }
+      />
     </>
   );
 }

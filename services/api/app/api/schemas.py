@@ -138,6 +138,11 @@ class VersionConflictDetail(BaseModel):
 
 class ReviewRequest(BaseModel):
     section_ids: list[str] | None = None  # None → the whole paper (ADR-014's default)
+    #: Re-run a review that already completed for this scope. Off by default: the review
+    #: screen auto-starts on mount, and without this a refresh silently paid for a second
+    #: full pass over the paper. The user asking for a fresh look is a different act from
+    #: the browser re-rendering a page, and only the first should spend money.
+    force: bool = False
 
 
 __all__ = [

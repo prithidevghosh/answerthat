@@ -380,6 +380,76 @@ async def test_style_service_detects_from_the_completed_ingest(tei_xml: str) -> 
     assert not payload["chosen_by_user"]
 
 
+@pytest.mark.skipif(not pandoc_available(), reason="pandoc is not installed")
+async def test_detection_is_not_rescored_on_every_read(tei_xml: str, monkeypatch) -> None:
+    """`GET /parse` calls `detect`, and the parse, review and edit screens all load it.
+
+    Scoring renders the sample through every candidate `.csl` with Pandoc — 61s for a
+    40-reference paper, measured — so recomputing per read made every screen cost a
+    minute to open. The ingest already scored these references and left the result on the
+    report, so the first read reuses it and later reads hit the memo.
+    """
+    pipeline = _pipeline(StubGrobid(tei=tei_xml))
+    pipeline.enqueue("doc_cached", "paper.pdf", b"%PDF-fake")
+    await _drain(pipeline, "doc_cached")
+
+    from app.parsing import style as style_module
+
+    calls = []
+    real = style_module.detect_style
+    monkeypatch.setattr(
+        style_module,
+        "detect_style",
+        lambda *a, **k: (calls.append(1), real(*a, **k))[1],
+    )
+
+    service = get_style_service(FakeSettings())
+    first = service.detect("doc_cached")
+    second = service.detect("doc_cached")
+
+    assert first == second
+    assert calls == [], "the ingest's own scoring should be reused, not repeated"
+
+
+@pytest.mark.skipif(not pandoc_available(), reason="pandoc is not installed")
+async def test_repaired_references_are_rescored_rather_than_served_from_the_memo(
+    tei_xml: str, monkeypatch
+) -> None:
+    """The memo must not outlive the data it was computed from.
+
+    Caching on `doc_id` alone would pin the first answer forever, so a reference repaired
+    or re-arbitrated after the fact would keep scoring against its old raw string. The key
+    is a fingerprint of the references actually scored.
+
+    Asserted on whether scoring *ran*, not on whether the number moved: a changed
+    reference that falls outside the scorable sample correctly yields the same score, and
+    asserting on the output would call that a cache bug when it is the right answer.
+    """
+    pipeline = _pipeline(StubGrobid(tei=tei_xml))
+    pipeline.enqueue("doc_repair", "paper.pdf", b"%PDF-fake")
+    await _drain(pipeline, "doc_repair")
+
+    from app.parsing import style as style_module
+
+    calls = []
+    real = style_module.detect_style
+    monkeypatch.setattr(
+        style_module,
+        "detect_style",
+        lambda *a, **k: (calls.append(1), real(*a, **k))[1],
+    )
+
+    service = get_style_service(FakeSettings())
+    service.detect("doc_repair")
+    assert calls == [], "the first read reuses the ingest's own scoring"
+
+    # Stand in for a repair pass: the raw string the scorer compares against changes.
+    pipeline.result("doc_repair").references[0].raw_string = "A different reference, 2024."
+
+    service.detect("doc_repair")
+    assert calls == [1], "a changed reference must invalidate the memo and re-score"
+
+
 def test_style_service_refuses_before_the_ingest_exists() -> None:
     with pytest.raises(StyleDetectionFailure, match="no completed ingest"):
         get_style_service(FakeSettings()).detect("doc_absent")

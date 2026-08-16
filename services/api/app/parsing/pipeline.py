@@ -36,7 +36,7 @@ from app.parsing.references import references_from_tei
 from app.parsing.registry import registry
 from app.parsing.repair import ReferenceSegmenter, RepairOutcome, repair_references
 from app.parsing.segmenter import build_default_segmenter
-from app.parsing.style import StyleDetectionResult, detect_style
+from app.parsing.style import StyleDetectionResult, detect_style, scoring_fingerprint
 from app.parsing.tei import parse_tei, tei_to_ir
 
 __all__ = [
@@ -60,6 +60,9 @@ class IngestResult:
     reconciliations: list[Reconciliation] = field(default_factory=list)
     repairs: list[RepairOutcome] = field(default_factory=list)
     style: StyleDetectionResult | None = None
+    #: Identifies the references and markers `style` was computed from, so a reader can
+    #: tell a still-valid score from one whose inputs have since been repaired.
+    style_fingerprint: int | None = None
     # Set when style detection could not run at all. The document is still valid — it
     # just has no detected style, and the user is told so rather than being handed a
     # silently chosen default.
@@ -198,6 +201,7 @@ async def ingest_tei(
             # honest — `result.style.style_id` is still None on a tie; choosing what to do
             # about that is policy, and it lives here rather than in the detector.
             detection = result.style
+            result.style_fingerprint = scoring_fingerprint(references, markers)
             chosen = detection.style_id
             if chosen is None and detection.candidates:
                 chosen = detection.candidates[0].style_id

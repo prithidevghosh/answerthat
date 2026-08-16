@@ -59,9 +59,37 @@ export function ChangeCard({
    * `move_blocks` — and its shape differs per operation. The diff is the thing
    * built for a reader: every touched span, with the text before and after.
    */
-  const spanDeltas = diff.blocks
-    .flatMap((block) => block.spans)
-    .filter((span) => span.status !== 'unchanged');
+  /**
+   * One comparison per paragraph, not per span.
+   *
+   * A `Shorten` does not rewrite sentences in place — it emits the old ones as
+   * `removed` and the new ones as `added`, with no correspondence between them.
+   * Rendering each span on its own produced dozens of half-empty cards ("this
+   * text is new", "this text would be removed") and never once put a sentence
+   * beside the thing that replaced it.
+   *
+   * Rebuilding both sides of the block is the honest fix. Before is every span
+   * that existed; after is every span that survives. That is a true statement
+   * about the paragraph, it reads as prose on both sides, and it invents no
+   * sentence-level pairing that the diff never claimed. Unchanged spans are
+   * included so each column is the real paragraph rather than a fragment of it.
+   */
+  const blockDiffs = diff.blocks
+    .map((block) => ({
+      block_id: block.block_id,
+      before: block.spans
+        .filter((s) => s.status !== 'added')
+        .map((s) => s.before_text ?? '')
+        .join(' ')
+        .trim(),
+      after: block.spans
+        .filter((s) => s.status !== 'removed')
+        .map((s) => s.after_text ?? '')
+        .join(' ')
+        .trim(),
+      touched: block.spans.filter((s) => s.status !== 'unchanged').length,
+    }))
+    .filter((b) => b.touched > 0 && b.before !== b.after);
 
   // Anchors come from the citation ledger, which accounts for every one the
   // change touched — including the ones it left alone. That is the HR-5 claim,
@@ -109,23 +137,23 @@ export function ChangeCard({
         </div>
       )}
 
-      {spanDeltas.length > 0 && (
+      {blockDiffs.length > 0 && (
         <div className="mt-6">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <p className="font-ui text-2xs uppercase tracking-[0.12em] text-muted">
               Proposed change
             </p>
             <p className="font-ui text-2xs text-muted">
-              {spanDeltas.length} {spanDeltas.length === 1 ? 'sentence' : 'sentences'} touched ·
+              {blockDiffs.length} {blockDiffs.length === 1 ? 'paragraph' : 'paragraphs'} ·
               everything not shown is unchanged
             </p>
           </div>
           <div className="mt-3 space-y-3">
-            {spanDeltas.map((span) => (
+            {blockDiffs.map((block) => (
               <SideBySideDiff
-                key={span.span_id}
-                before={span.before_text ?? ''}
-                after={span.after_text ?? ''}
+                key={block.block_id}
+                before={block.before}
+                after={block.after}
               />
             ))}
           </div>

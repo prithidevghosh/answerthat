@@ -259,6 +259,26 @@ def detect_style(
     )
 
 
+def scoring_fingerprint(references: list[ParsedReference], markers: list[str]) -> int:
+    """Identify the inputs a detection was computed from.
+
+    Shared by the pipeline, which records it beside the score it computed, and by
+    `StyleService`, which refuses to reuse that score unless the inputs still match. Both
+    must derive it the same way, which is the entire reason it lives in one function
+    rather than being spelled out at each call site.
+
+    Covers what scoring actually reads: the raw string each candidate style is compared
+    against, the record a reference resolved to, and the in-text markers that pick the
+    candidate family.
+    """
+    return hash(
+        (
+            tuple((r.ref_id, r.raw_string, r.source_id) for r in references),
+            tuple(markers),
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Service surface for the API layer (B3's `get_style_service`, memory.md §5).
 # ---------------------------------------------------------------------------
@@ -271,12 +291,21 @@ class StyleService:
     first answer, so re-running after references have been repaired or re-arbitrated
     reflects the better data. `select` records the user's choice — which is the required
     path out of an `ambiguous` result, not an optional override.
+
+    That re-scoring is memoized on a fingerprint of the references it scored, which keeps
+    the property above — repaired references change the fingerprint and the score is
+    recomputed — without paying for it on every read. Scoring renders the sample through
+    every candidate `.csl` with Pandoc: measured at **61s** for a 40-reference paper, and
+    `GET /parse` calls it, so the parse, review and edit screens each cost a minute to
+    open. Unmemoized it was recomputing a byte-identical answer, because nothing mutates
+    a completed ingest report.
     """
 
     def __init__(self, *, styles_dir: Path | None, ambiguity_margin: float) -> None:
         self._styles_dir = styles_dir
         self._ambiguity_margin = ambiguity_margin
         self._chosen: dict[str, str] = {}
+        self._scored: dict[str, tuple[int, StyleDetectionResult]] = {}
 
     def detect(self, doc_id: str) -> dict[str, Any]:
         from app.parsing.registry import registry
@@ -293,12 +322,32 @@ class StyleService:
             anchor.anchor.original_marker_text or ""
             for anchor in _iter_anchors(result.document)
         ]
-        detection = detect_style(
-            result.references,
-            markers,
-            styles_dir=self._styles_dir,
-            ambiguity_margin=self._ambiguity_margin,
-        )
+
+        fingerprint = scoring_fingerprint(result.references, markers)
+        cached = self._scored.get(doc_id)
+
+        if cached is not None and cached[0] == fingerprint:
+            detection = cached[1]
+        elif result.style is not None and result.style_fingerprint == fingerprint:
+            # The ingest already scored these exact references and kept the result on the
+            # report. Re-deriving it here cost 35s on the first read of every document —
+            # the same answer, off the same inputs, computed minutes earlier.
+            #
+            # The fingerprint comparison is load-bearing, not belt-and-braces: reusing
+            # `result.style` because it merely exists would serve a score computed against
+            # a reference that has since been repaired, which is precisely the staleness
+            # this class's docstring promises not to have.
+            detection = result.style
+            self._scored[doc_id] = (fingerprint, detection)
+        else:
+            detection = detect_style(
+                result.references,
+                markers,
+                styles_dir=self._styles_dir,
+                ambiguity_margin=self._ambiguity_margin,
+            )
+            self._scored[doc_id] = (fingerprint, detection)
+
         return self._payload(detection, chosen=self._chosen.get(doc_id))
 
     def select(self, doc_id: str, style_id: str) -> dict[str, Any]:

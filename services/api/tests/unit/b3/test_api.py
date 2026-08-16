@@ -47,7 +47,11 @@ class StubReview:
         self._events = events or []
         self._fail = fail
 
-    async def start(self, doc_id: str, section_ids=None) -> str:
+    async def start(self, doc_id: str, section_ids=None, *, force: bool = False) -> str:
+        # Mirrors the port exactly, `force` included. A double that quietly swallowed
+        # unknown kwargs would have hidden the route passing an argument the real runner
+        # does not take — which is the whole reason this double is spelled out by hand.
+        self.forced = force
         return "job-review-1"
 
     async def status(self, doc_id: str) -> dict:
