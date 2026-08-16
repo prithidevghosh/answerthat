@@ -23,7 +23,15 @@ from app.core.contracts import Block, CitationAnchor, Document, Section, Span
 from app.core.errors import ExportFailure
 from app.export.pandoc import PANDOC_API_VERSION
 
-__all__ = ["document_to_ast", "citation_key_map", "PLACEHOLDER_PREFIXES"]
+__all__ = ["document_to_ast", "citation_key_map", "PLACEHOLDER_PREFIXES", "UNRESOLVED_CITATION"]
+
+# An anchor that cites nothing used to render as an empty Cite, which pandoc writes as
+# `\phantomsection\label{anc_...}{}` — the label survives, so the round-trip check passes,
+# but the citation marker the paper had at that position is simply gone from the text.
+# That is the silent loss HR-3 exists to prevent, and it is invisible precisely because
+# the round trip greps for anchor ids rather than for rendered markers. So it gets a
+# visible marker instead, on the same terms as the figure and table placeholders.
+UNRESOLVED_CITATION = "[CITATION UNRESOLVED]"
 
 # ADR-008: figures, tables and equations are a stated scope cut. The placeholder must be
 # visible in the output, so nobody mistakes it for fidelity we do not have.
@@ -82,6 +90,9 @@ def _cite_inline(anchor: CitationAnchor, keys: Mapping[str, str]) -> dict:
     Multiple `source_ids` on one anchor become multiple citations inside a single Cite,
     which is what collapses `[2, 3]` back into one bracket group under a numeric style.
     """
+    if not anchor.source_ids:
+        return _unresolved_inline(anchor)
+
     citations = []
     for source_id in anchor.source_ids:
         key = keys.get(source_id)
@@ -104,6 +115,25 @@ def _cite_inline(anchor: CitationAnchor, keys: Mapping[str, str]) -> dict:
     fallback = [{"t": "Str", "c": "[" + "; ".join(f"@{c['citationId']}" for c in citations) + "]"}]
     cite = {"t": "Cite", "c": [citations, fallback]}
     return {"t": "Span", "c": [[anchor.anchor_id, [], []], [cite]]}
+
+
+def _unresolved_inline(anchor: CitationAnchor) -> dict:
+    """A visible stand-in for an anchor that resolved to no source at all.
+
+    Carries `original_marker_text` where we have it, so the reader can tell *which*
+    citation went missing without diffing against the PDF. The "UNRESOLVED" prefix is
+    what keeps that from reading as a real, rendered citation.
+    """
+    label = UNRESOLVED_CITATION
+    if anchor.original_marker_text:
+        label = f"[CITATION UNRESOLVED: {anchor.original_marker_text}]"
+    return {
+        "t": "Span",
+        "c": [
+            [anchor.anchor_id, ["answerthat-unresolved-citation"], []],
+            [{"t": "Strong", "c": _inlines_from_text(label)}],
+        ],
+    }
 
 
 def _span_to_inlines(span: Span, keys: Mapping[str, str]) -> list[dict]:

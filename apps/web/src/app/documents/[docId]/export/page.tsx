@@ -1,4 +1,4 @@
-import { HorizonBand } from '@/components/Ornament';
+import { MarginPlate, MarginFoot } from '@/components/Ornament';
 import { FixtureBanner } from '@/components/FixtureBanner';
 import { ConfigurationError } from '@/components/ConfigurationError';
 import { WorkbenchHeader } from '@/components/WorkbenchHeader';
@@ -52,15 +52,19 @@ export default async function ExportPage({ params }: { params: Promise<{ docId: 
   return (
     <>
       <FixtureBanner />
-      <WorkbenchHeader
-        docId={docId}
-        current="export"
-        title={document.metadata.title}
-        version={document.version}
-      />
-      <ExportPanel docId={docId} manifest={manifest} />
-      {/* The plate returns only at the foot, after the content — never behind it. */}
-      <HorizonBand />
+      {/* Pl. IV — the last plate of the suite, closing the arc the
+          frontispiece opened. */}
+      <MarginPlate plate={4} />
+      <div className="leaf">
+        <WorkbenchHeader
+          docId={docId}
+          current="export"
+          title={document.metadata.title}
+          version={document.version}
+        />
+        <ExportPanel docId={docId} manifest={manifest} />
+        <MarginFoot plate={4} />
+      </div>
     </>
   );
 }

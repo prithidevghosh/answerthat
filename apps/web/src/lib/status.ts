@@ -10,7 +10,7 @@
  */
 import type { ConfidenceTier, VerificationLabel, AbstractSource } from './contracts';
 
-export type Ink = 'indigo' | 'sepia' | 'madder' | 'verdigris';
+export type Ink = 'cobalt' | 'sepia' | 'madder' | 'verdigris';
 
 export type SealKind =
   | 'filled' //   resolved — a complete impression
@@ -32,7 +32,7 @@ export interface StatusDescriptor {
 
 export const TIER_STATUS: Record<ConfidenceTier, StatusDescriptor> = {
   resolved: {
-    ink: 'indigo',
+    ink: 'cobalt',
     label: 'Resolved',
     seal: 'filled',
     note: 'Matched to a record in an external index. The metadata below comes from that record, not from our parse.',
@@ -65,7 +65,7 @@ export const TIER_STATUS: Record<ConfidenceTier, StatusDescriptor> = {
 
 export const VERIFICATION_STATUS: Record<VerificationLabel, StatusDescriptor> = {
   supports: {
-    ink: 'indigo',
+    ink: 'cobalt',
     label: 'Supports',
     seal: 'quote',
     note: 'The quoted passage from the abstract supports this claim.',
@@ -105,7 +105,7 @@ export const ABSTRACT_SOURCE_LABEL: Record<AbstractSource, string> = {
 
 /** Tailwind text-colour class per ink. Kept here so no component guesses. */
 export const INK_TEXT: Record<Ink, string> = {
-  indigo: 'text-indigo',
+  cobalt: 'text-cobalt',
   sepia: 'text-sepia',
   madder: 'text-madder',
   verdigris: 'text-verdigris',
@@ -113,17 +113,29 @@ export const INK_TEXT: Record<Ink, string> = {
 
 /** Hairline rule colour per ink, for card edges and quote blocks. */
 export const INK_BORDER: Record<Ink, string> = {
-  indigo: 'border-indigo/35',
+  cobalt: 'border-cobalt/35',
   sepia: 'border-sepia/40',
   madder: 'border-madder/40',
   verdigris: 'border-verdigris/40',
 };
 
 export const INK_BG: Record<Ink, string> = {
-  indigo: 'bg-indigo/[0.04]',
+  cobalt: 'bg-cobalt/[0.04]',
   sepia: 'bg-sepia/[0.05]',
   madder: 'bg-madder/[0.05]',
   verdigris: 'bg-verdigris/[0.05]',
+};
+
+/**
+ * Solid ink for the rule down a card's outer edge — the printer's marginal
+ * mark that carries a card's status at a glance down a long column. Solid, not
+ * tinted: at 2px a translucent rule reads as a smudge rather than an ink.
+ */
+export const INK_RULE: Record<Ink, string> = {
+  cobalt: 'bg-cobalt',
+  sepia: 'bg-sepia',
+  madder: 'bg-madder',
+  verdigris: 'bg-verdigris',
 };
 
 export const TIER_ORDER: ConfidenceTier[] = [

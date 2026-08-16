@@ -39,12 +39,12 @@ export function ExportPanel({ docId, manifest }: { docId: string; manifest: Expo
 
   return (
     <main id="main" className="relative z-10 content-column py-16">
-      <p className="font-ui text-2xs uppercase tracking-[0.14em] text-muted">Export</p>
+      <p className="engraved-label text-muted">Export</p>
       <h1 className="mt-2 font-display text-3xl text-primary">Take your paper back</h1>
 
       <div className="mt-12 grid gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,320px)]">
         <div>
-          <Plate className="px-8 py-10">
+          <Plate fleurons className="px-8 py-10">
             <div className="measure">
               <p className="font-ui text-2xs uppercase tracking-[0.12em] text-muted">
                 Revised manuscript
@@ -101,7 +101,7 @@ export function ExportPanel({ docId, manifest }: { docId: string; manifest: Expo
                         setPressed(true);
                         window.setTimeout(() => setPressed(false), 600);
                       }}
-                      className={`inline-flex items-center gap-3 rounded border border-indigo/45 bg-plate px-7 py-3.5 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06] ${
+                      className={`inline-flex items-center gap-3 rounded border border-cobalt/45 bg-leaf px-7 py-3.5 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06] ${
                         pressed ? 'animate-impress' : ''
                       }`}
                     >
@@ -194,7 +194,7 @@ export function ExportPanel({ docId, manifest }: { docId: string; manifest: Expo
         </div>
 
         <aside>
-          <h2 className="font-ui text-2xs uppercase tracking-[0.14em] text-muted">
+          <h2 className="engraved-label text-muted">
             What survives exactly
           </h2>
           <ul className="mt-6 space-y-4">
@@ -205,7 +205,7 @@ export function ExportPanel({ docId, manifest }: { docId: string; manifest: Expo
               'Every bibliography entry, rendered by Pandoc from the same .csl file used for preview',
             ].map((item) => (
               <li key={item} className="flex gap-3">
-                <span className="mt-0.5 shrink-0 text-indigo">
+                <span className="mt-0.5 shrink-0 text-cobalt">
                   <Seal kind="filled" size={14} />
                 </span>
                 <span className="text-xs leading-relaxed text-secondary">{item}</span>
@@ -297,7 +297,7 @@ function StyleControl({
             onClick={() => choose(id)}
             className={`rounded border px-4 py-2 font-ui text-2xs transition-colors duration-ink ease-ink disabled:opacity-50 ${
               id === styleId
-                ? 'border-indigo/45 bg-indigo/[0.06] text-indigo'
+                ? 'border-cobalt/45 bg-cobalt/[0.06] text-cobalt'
                 : 'border-sepia/40 text-primary hover:bg-sepia/[0.07]'
             }`}
           >

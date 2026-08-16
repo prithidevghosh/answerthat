@@ -63,14 +63,14 @@ export function ParseInspector({
     <main id="main" className="relative z-10 content-column py-16">
       <div className="flex flex-wrap items-end justify-between gap-6">
         <div>
-          <p className="font-ui text-2xs uppercase tracking-[0.14em] text-muted">Parse inspector</p>
+          <p className="engraved-label text-muted">Parse inspector</p>
           <h1 className="mt-2 font-display text-3xl text-primary">
             {result.document.metadata.title ?? 'Untitled document'}
           </h1>
         </div>
         <Link
           href={`/documents/${docId}/review`}
-          className="rounded border border-indigo/40 px-5 py-2.5 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06]"
+          className="rounded border border-cobalt/40 px-5 py-2.5 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06]"
         >
           Start review →
         </Link>
@@ -100,7 +100,7 @@ export function ParseInspector({
           right. The margin ornament stays outside, at reduced strength. */}
       <div className="grid gap-16 lg:grid-cols-[minmax(0,260px)_minmax(0,1fr)]">
         <aside>
-          <h2 className="font-ui text-2xs uppercase tracking-[0.14em] text-muted">
+          <h2 className="engraved-label text-muted">
             Document structure
           </h2>
           <div className="mt-6">
@@ -110,14 +110,14 @@ export function ParseInspector({
 
         <section aria-labelledby="refs-heading">
           <div className="flex flex-wrap items-baseline justify-between gap-4">
-            <h2 id="refs-heading" className="font-ui text-2xs uppercase tracking-[0.14em] text-muted">
+            <h2 id="refs-heading" className="engraved-label text-muted">
               References
             </h2>
             {filter !== 'all' && (
               <button
                 type="button"
                 onClick={() => setFilter('all')}
-                className="font-ui text-2xs text-indigo underline decoration-indigo/30 underline-offset-2 hover:decoration-indigo"
+                className="font-ui text-2xs text-cobalt underline decoration-cobalt/30 underline-offset-2 hover:decoration-cobalt"
               >
                 Showing {TIER_COUNT_LABEL[filter]} only — show all
               </button>
@@ -190,7 +190,7 @@ function Chip({
 }: {
   label: string;
   active: boolean;
-  ink?: 'indigo' | 'sepia' | 'madder' | 'verdigris';
+  ink?: 'cobalt' | 'sepia' | 'madder' | 'verdigris';
   onClick: () => void;
 }) {
   // Full class strings per ink: Tailwind scans literals, and `currentColor`
@@ -209,9 +209,9 @@ function Chip({
             off: 'hover:bg-sepia/[0.05]',
           }
         : {
-            base: 'text-indigo border-indigo/35',
-            on: 'bg-indigo/[0.09]',
-            off: 'hover:bg-indigo/[0.05]',
+            base: 'text-cobalt border-cobalt/35',
+            on: 'bg-cobalt/[0.09]',
+            off: 'hover:bg-cobalt/[0.05]',
           };
   return (
     <button

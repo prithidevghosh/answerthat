@@ -111,7 +111,7 @@ export function ChangeCard({
         ? 'madder'
         : verdict.decision === 'flag'
           ? 'sepia'
-          : 'indigo';
+          : 'cobalt';
 
   return (
     <Plate as="li" accent={accent} className="px-6 py-6 sm:px-8">

@@ -91,7 +91,7 @@ export function StyleBanner({
               {saving === c.style_id ? 'Saving…' : styleName(c.style_id)}
               <span className="ml-2 font-mono text-2xs text-muted">{c.score.toFixed(2)}</span>
               {c.style_id === inUse && (
-                <span className="ml-2 font-ui text-2xs text-indigo">in use</span>
+                <span className="ml-2 font-ui text-2xs text-cobalt">in use</span>
               )}
             </button>
           ))}
@@ -124,7 +124,7 @@ export function StyleBanner({
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-ui text-2xs text-muted">
-      <span className="inline-flex items-center gap-2 text-indigo">
+      <span className="inline-flex items-center gap-2 text-cobalt">
         <Seal kind="filled" size={14} />
         Rendered in {styleName(style.style_id)}
       </span>

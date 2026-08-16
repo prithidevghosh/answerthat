@@ -16,15 +16,15 @@ const config: Config = {
       colors: {
         paper: 'rgb(var(--paper-rgb) / <alpha-value>)',
         'paper-deep': 'rgb(var(--paper-deep-rgb) / <alpha-value>)',
-        plate: 'rgb(var(--plate-rgb) / <alpha-value>)',
+        leaf: 'rgb(var(--leaf-rgb) / <alpha-value>)',
 
-        // The indigo ladder, sampled from hero-plate.svg.
+        // The cobalt ladder, sampled from the engravings at hue 219.
         palest: 'rgb(var(--ink-palest-rgb) / <alpha-value>)',
         pale: 'rgb(var(--ink-pale-rgb) / <alpha-value>)',
+        mist: 'rgb(var(--ink-mist-rgb) / <alpha-value>)',
         slate: 'rgb(var(--ink-slate-rgb) / <alpha-value>)',
-        steel: 'rgb(var(--ink-steel-rgb) / <alpha-value>)',
-        indigo: 'rgb(var(--ink-indigo-rgb) / <alpha-value>)',
-        deepest: 'rgb(var(--ink-deepest-rgb) / <alpha-value>)',
+        cobalt: 'rgb(var(--ink-cobalt-rgb) / <alpha-value>)',
+        deep: 'rgb(var(--ink-deep-rgb) / <alpha-value>)',
 
         // Status inks — same press, different plates.
         sepia: 'rgb(var(--ink-sepia-rgb) / <alpha-value>)',
@@ -37,6 +37,7 @@ const config: Config = {
       },
       borderColor: {
         hair: 'var(--rule-hair)',
+        fine: 'var(--rule-fine)',
         strong: 'var(--rule-strong)',
         DEFAULT: 'var(--rule-hair)',
       },
@@ -46,16 +47,23 @@ const config: Config = {
         ui: 'var(--font-ui)',
         mono: 'var(--font-mono)',
       },
-      // 1.25 minor third: 12 / 14 / 16 / 20 / 25 / 31 / 39 / 49
+      // 1.26 — 12 / 14 / 16 / 20 / 25 / 31 / 39 / 49 / 62.
+      // Display type starts at `lg`: Bodoni is a Didone and its hairlines break
+      // up below ~20px on a low-DPR screen.
       fontSize: {
-        '2xs': ['0.75rem', { lineHeight: '1.4' }], //  12
-        xs: ['0.875rem', { lineHeight: '1.5' }], //    14
-        base: ['1rem', { lineHeight: '1.65' }], //     16 — body
-        lg: ['1.25rem', { lineHeight: '1.45' }], //    20
-        xl: ['1.5625rem', { lineHeight: '1.35' }], //  25
-        '2xl': ['1.9375rem', { lineHeight: '1.25' }], //31
-        '3xl': ['2.4375rem', { lineHeight: '1.15' }], //39
-        '4xl': ['3.0625rem', { lineHeight: '1.1' }], // 49
+        '2xs': ['0.75rem', { lineHeight: '1.45' }], //   12
+        xs: ['0.875rem', { lineHeight: '1.55' }], //     14
+        base: ['1rem', { lineHeight: '1.68' }], //       16 — body
+        lg: ['1.25rem', { lineHeight: '1.45' }], //      20
+        xl: ['1.5625rem', { lineHeight: '1.32' }], //    25
+        '2xl': ['1.9375rem', { lineHeight: '1.22' }], // 31
+        '3xl': ['2.4375rem', { lineHeight: '1.14' }], // 39
+        '4xl': ['3.0625rem', { lineHeight: '1.08' }], // 49
+        '5xl': ['3.875rem', { lineHeight: '1.04' }], //  62
+      },
+      letterSpacing: {
+        plate: '0.14em', // engraved labels
+        wide: '0.06em',
       },
       spacing: {
         1: '4px',
@@ -69,17 +77,18 @@ const config: Config = {
         24: '96px',
       },
       maxWidth: {
-        content: '1100px', // the calm centre column
+        content: '1140px', // the calm centre column
         measure: '68ch', //  a finding is prose; treat it as prose
       },
       borderRadius: {
-        DEFAULT: '2px', // corners are square; fleurons do the ornament
+        DEFAULT: '0px', // corners are square; the rules do the ornament
+        sm: '1px',
         none: '0',
         full: '9999px',
       },
       boxShadow: {
         // Engravings have no drop shadows. This is the ceiling.
-        plate: '0 1px 2px rgba(20,31,46,0.06)',
+        plate: '0 1px 2px rgba(17,30,49,0.05)',
         none: 'none',
       },
       transitionTimingFunction: {
@@ -100,10 +109,16 @@ const config: Config = {
           '0%': { transform: 'scale(1.02)' },
           '100%': { transform: 'scale(1)' },
         },
+        // A rule drawn by the burin, left to right. Used for section openings.
+        'draw-rule': {
+          from: { transform: 'scaleX(0)' },
+          to: { transform: 'scaleX(1)' },
+        },
       },
       animation: {
         'rise-in': 'rise-in 240ms cubic-bezier(0.2, 0, 0.2, 1) both',
         impress: 'impress 400ms cubic-bezier(0.2, 0, 0.2, 1) both',
+        'draw-rule': 'draw-rule 420ms cubic-bezier(0.2, 0, 0.2, 1) both',
       },
     },
   },

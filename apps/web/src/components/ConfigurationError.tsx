@@ -44,7 +44,7 @@ export function ConfigurationError({ status }: { status: ApiStatus }) {
 
   return (
     <main id="main" className="content-column py-24">
-      <Plate accent="madder" className="px-8 py-12 sm:px-12">
+      <Plate accent="madder" fleurons className="px-8 py-12 sm:px-12">
         <div className="measure mx-auto">
           <span className="inline-flex items-center gap-3 font-ui text-xs font-medium text-madder">
             <Seal kind="broken" size={20} />
@@ -94,7 +94,7 @@ export function ConfigurationError({ status }: { status: ApiStatus }) {
                           href={help.url}
                           target="_blank"
                           rel="noreferrer noopener"
-                          className="text-indigo underline decoration-indigo/30 underline-offset-2 hover:decoration-indigo"
+                          className="text-cobalt underline decoration-cobalt/30 underline-offset-2 hover:decoration-cobalt"
                         >
                           {help.where}
                         </a>

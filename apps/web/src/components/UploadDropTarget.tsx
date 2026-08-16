@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { getClient } from '@/lib/api/client';
 import type { UploadProgress } from '@/lib/api/types';
 import { Seal } from './Seal';
-import { Fleuron } from './Ornament';
 
 const MAX_BYTES = 50 * 1024 * 1024;
 
@@ -134,55 +133,95 @@ export function UploadDropTarget() {
         }}
       />
 
+      {/*
+        A CARTOUCHE, not a dropzone.
+
+        This was a 540x148 hollow rectangle — a void sitting on the engraving,
+        and a foreign object on a plate. It does not need to be large: the drag
+        listeners above are bound to `window`, so the whole screen is already
+        the drop area and this element only has to be the affordance and the
+        click target. Sized as a deliberate object rather than a field, it reads
+        as the framed label plaque an engraving actually contains, it stops
+        competing with the wordmark, and the ~70px it gives back is what keeps
+        the whole block inside the plate's open field on a short screen.
+
+        Still an OPEN frame, never a filled panel: §4 forbids a scrim over the
+        plate, and the field behind this is already at paper value.
+      */}
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
         aria-describedby="upload-help"
-        // An OPEN FRAME, not a filled panel. design-system.md §4 forbids a
-        // scrim over the plate; the sky behind this is already at paper value,
-        // so the frame needs no fill to be legible and the engraving shows
-        // through it intact.
-        className={`group relative flex h-[136px] w-full flex-col items-center justify-center gap-3 rounded border px-8 transition-colors duration-ink ease-ink ${
+        className={`group relative flex h-[74px] w-[clamp(304px,27vw,364px)] flex-col items-center justify-center border px-6 transition-colors duration-ink ease-ink ${
           dragging
-            ? 'border-indigo bg-paper/70'
-            : 'border-[var(--rule-strong)] hover:border-indigo hover:bg-paper/40'
+            ? 'border-cobalt bg-paper/70'
+            : 'border-[var(--rule-strong)] hover:border-cobalt hover:bg-paper/35'
         }`}
       >
+        {/* The outer line of the plate border. Two rules, one gap — the frame an
+            engraver cuts around an image. Drawn as a sibling rather than an
+            `outline` so it never fights the focus ring. */}
         <span
           aria-hidden="true"
-          className="text-indigo/70 transition-colors duration-ink group-hover:text-indigo"
-        >
-          <PlateIcon />
+          className={`pointer-events-none absolute -inset-[5px] border transition-colors duration-ink ${
+            dragging ? 'border-cobalt/50' : 'border-cobalt/25 group-hover:border-cobalt/40'
+          }`}
+        />
+
+        {/*
+          Centred and typographic, with no icon.
+
+          The icon sat to the left of a two-line left-aligned block, which put
+          a long line over a short one and left a void in the bottom-right of
+          the plaque — the group measured centred and still read left-heavy.
+          A cartouche on an engraving is a piece of set type in a frame, so
+          this is set type in a frame: two centred lines, symmetric about the
+          same axis as the wordmark above.
+        */}
+        <span className="block font-display text-lg leading-tight tracking-[-0.01em] text-primary">
+          {dragging ? 'Release to begin' : 'Drop your paper here'}
         </span>
-        <span className="text-center">
-          <span className="block font-display text-lg text-primary">
-            {dragging ? 'Release to begin' : 'Drop your paper here'}
-          </span>
-          <span className="mt-1 block font-ui text-xs text-secondary">
-            or <span className="underline decoration-indigo/40 underline-offset-4">choose a PDF</span>
+        <span className="mt-1 block font-ui text-2xs text-secondary">
+          or{' '}
+          <span className="underline decoration-cobalt/40 underline-offset-4 group-hover:decoration-cobalt">
+            choose a PDF
           </span>
         </span>
       </button>
 
       {/*
-        Kept inside the frame's own column and immediately beneath it, so the
-        whole block stays within the plate's calm upper region. Nothing on this
-        screen extends past the drop target.
+        The lowest line on the threshold, and so the one closest to the edge of
+        the plate's open field — it is the first thing to end up over foliage if
+        the block above it grows. It carries real terms, so it is set in the
+        secondary ink rather than muted — 7.24:1 on paper against 5.29. Do not
+        lighten it back. It stays at the standard engraved-label size so it is
+        narrower than the cartouche it captions; at a step larger it ran wider
+        than the plaque, which reads as a heading rather than a footnote.
       */}
-      <p id="upload-help" className="mt-4 font-ui text-2xs text-muted">
-        PDF, up to 50 MB. Nothing is published.
+      <p
+        id="upload-help"
+        className="engraved-label mt-4 text-secondary [@media(min-height:940px)]:mt-5"
+      >
+        PDF · up to 50 MB · nothing is published
       </p>
 
       {state.kind === 'failed' && (
         <div
           role="alert"
-          className="mt-6 flex w-full items-start gap-4 rounded border border-madder/40 bg-paper/85 px-6 py-5 text-left"
+          // Fully opaque, not bg-leaf/90. This is the one element on the
+          // threshold that legitimately extends past the plate's open field,
+          // because an error must be shown wherever it happens — so it brings
+          // its own paper rather than relying on the field being light. A card
+          // with its own ground is the allowed way to do that; bare text over
+          // the engraving is not (§4 rule 2).
+          className="relative mt-6 flex w-full items-start gap-4 border border-hair bg-leaf py-5 pl-6 pr-6 text-left"
         >
+          <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[2px] bg-madder" />
           <span className="mt-px shrink-0 text-madder">
             <Seal kind="broken" size={18} />
           </span>
           <div>
-            <p className="font-ui text-xs font-medium text-madder">{state.message}</p>
+            <p className="engraved-label text-madder">{state.message}</p>
             {state.detail && (
               <p className="mt-1.5 text-xs leading-relaxed text-secondary">{state.detail}</p>
             )}
@@ -192,7 +231,7 @@ export function UploadDropTarget() {
                 setState({ kind: 'idle' });
                 inputRef.current?.click();
               }}
-              className="mt-3 font-ui text-2xs text-indigo underline decoration-indigo/30 underline-offset-2 hover:decoration-indigo"
+              className="mt-3 font-ui text-2xs text-cobalt underline decoration-cobalt/30 underline-offset-2 hover:decoration-cobalt"
             >
               Choose another file
             </button>
@@ -208,11 +247,16 @@ function Working({ progress }: { progress: UploadProgress }) {
 
   return (
     <div className="flex w-full flex-col items-center" aria-live="polite">
-      <div className="flex h-[136px] w-full flex-col items-center justify-center gap-5 rounded border border-hair bg-paper/60 px-10">
-        <Fleuron size={16} className="text-indigo/50" />
+      {/* Same footprint as the cartouche it replaces, so the threshold does not
+          jump when the upload starts. */}
+      <div className="relative flex h-[78px] w-[clamp(304px,27vw,364px)] flex-col items-center justify-center border border-hair bg-paper/55 px-6">
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute -inset-[5px] border border-hair"
+        />
 
         <div className="w-full">
-          <p className="text-center font-display text-lg text-primary">
+          <p className="text-center font-display text-base leading-tight tracking-[-0.01em] text-primary">
             {STAGE_TEXT[progress.stage]}
           </p>
 
@@ -221,7 +265,7 @@ function Working({ progress }: { progress: UploadProgress }) {
           <div className="mt-4 h-px w-full bg-[var(--rule-hair)]">
             {pct !== null && (
               <div
-                className="h-px bg-indigo transition-[width] duration-ink ease-ink"
+                className="h-px bg-cobalt transition-[width] duration-ink ease-ink"
                 style={{ width: `${pct}%` }}
               />
             )}
@@ -238,28 +282,5 @@ function Working({ progress }: { progress: UploadProgress }) {
         Parsing takes about a minute for a typical paper.
       </p>
     </div>
-  );
-}
-
-/** A copperplate and burin — the press, not a cloud-arrow. */
-function PlateIcon() {
-  return (
-    <svg
-      width="38"
-      height="38"
-      viewBox="0 0 52 52"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.1"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <rect x="9.5" y="6.5" width="33" height="39" />
-      <path d="M14 6.5v39M38 6.5v39" strokeDasharray="1.5 3" opacity="0.5" />
-      <path d="M19 17h14M19 23h14M19 29h9" opacity="0.75" />
-      <path d="M26 34.5v8M22.5 39l3.5 3.5 3.5-3.5" />
-    </svg>
   );
 }

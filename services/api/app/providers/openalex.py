@@ -25,6 +25,7 @@ results, which is the same invisible false negative a missing key produces (ADR-
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.core.contracts import AbstractSource, SourceRecord
@@ -149,9 +150,15 @@ class OpenAlexProvider:
     # ------------------------------------------------------------------ Provider protocol
 
     async def search_works(self, query: str, limit: int = 10) -> list[SourceRecord]:
+        terms = _escape_search(query)
+        if not terms:
+            # Nothing searchable survived — a claim that is entirely notation. No query to
+            # send, so no credit to spend. This is the one empty list here that is not a
+            # swallowed failure: the other strategies still run for this claim.
+            return []
         response = await self.http.get_json(
             "/works",
-            params={"search": query, "per_page": min(limit, 200)},
+            params={"search": terms, "per_page": min(limit, 200)},
             ttl_s=TTL.SEARCH,
             credits=OpenAlexCost.LIST,
         )
@@ -416,3 +423,26 @@ def _escape_filter(value: str) -> str:
     silently becomes a different query. Colons terminate the filter key.
     """
     return " ".join(value.replace(",", " ").replace("|", " ").replace(":", " ").split())
+
+
+def _escape_search(value: str) -> str:
+    """Reduce free text to the bare terms the `search` parameter accepts.
+
+    `search` is a query grammar, not a string field, and OpenAlex rejects the operators it
+    does not support with a 400 for the whole request rather than escaping them. `|` is the
+    one that bites: `P(Y = y|x)` is an unremarkable sentence in a machine-learning paper,
+    and passing a claim containing it through verbatim fails the claim, and with it —
+    because candidate generation deliberately does not forgive exceptions — the entire
+    review job.
+
+    So we keep the words and drop everything else, rather than escaping operators one at a
+    time as we discover them: the failure mode of the blocklist approach is another 400
+    that kills another review, and a keyword search reads nothing but the words anyway.
+    """
+    return " ".join(_NON_TERM.sub(" ", value).split())
+
+
+#: Anything that is not a word character or whitespace is punctuation to a keyword search
+#: and potentially syntax to OpenAlex. Hyphens go too — "self-supervised" searches the same
+#: as "self supervised", and a leading hyphen is OpenAlex's NOT.
+_NON_TERM = re.compile(r"[^\w\s]", re.UNICODE)

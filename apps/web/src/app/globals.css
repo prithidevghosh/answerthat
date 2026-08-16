@@ -7,11 +7,11 @@
    --------------------------------------------------------------------------- */
 :root {
   /*
-    Every colour here is sampled from hero-plate.svg — the plate is the source
-    of truth for this system (design-system.md §2). It is a single-ink
-    engraving, so the interface is a single-ink interface: a ladder of indigo on
-    the plate's own warm ivory, plus three status inks pitched to the same value
-    depth so they read as further plates from the same press.
+    Every colour here is sampled from the engravings in public/ornament — the
+    frontispiece and the four margin plates. They are a single-ink suite: a
+    cobalt at hue 219 laid on warm ivory. Sampling three plates independently
+    returned hue 217-220 and saturation 0.60-0.62 every time, so the ladder
+    below is built on that hue and nothing else is invented alongside it.
 
     Each token is declared twice, on purpose. The hex form is the readable
     source of truth and is what plain CSS uses. The `-rgb` channel form is what
@@ -20,63 +20,63 @@
     `border-madder/40` silently emits invalid CSS and falls back, with no build
     error. Keep the two forms in step; they are paired line by line for that.
 
-    Contrast is measured, not eyeballed. Every text ink below clears WCAG AA on
-    paper, plate and paper-deep — the table is in design-system.md §2.
+    Contrast is measured, not eyeballed. Every text ink clears WCAG AA on all
+    three grounds; every rule used on an interactive edge clears 3:1. The table
+    is in design-system.md §2.
   */
 
-  /* Ground — the plate's own paper */
-  --paper: #efece6;
-  --paper-rgb: 239 236 230;
-  --paper-deep: #e4dfd6;
-  --paper-deep-rgb: 228 223 214;
-  --plate: #f7f5f1;
-  --plate-rgb: 247 245 241;
+  /* Grounds — the plates' own paper */
+  --paper: #f3ede6; /* the leaf */
+  --paper-rgb: 243 237 230;
+  --paper-deep: #e8e0d5; /* recessed panels, raw-string blocks */
+  --paper-deep-rgb: 232 224 213;
+  --leaf: #fbf8f3; /* a fresh sheet — raised cards */
+  --leaf-rgb: 251 248 243;
 
-  /* The indigo ladder, sampled from the engraving, light to dark */
-  --ink-palest: #bcc3ce;
-  --ink-palest-rgb: 188 195 206;
-  --ink-pale: #919fb6;
-  --ink-pale-rgb: 145 159 182;
-  --ink-muted: #7589aa;
-  --ink-muted-rgb: 117 137 170;
-  --ink-slate: #556d94;
-  --ink-slate-rgb: 85 109 148;
-  --ink-steel: #475a78;
-  --ink-steel-rgb: 71 90 120;
-  --ink-indigo: #1e3659;
-  --ink-indigo-rgb: 30 54 89;
-  --ink-deepest: #162436;
-  --ink-deepest-rgb: 22 36 54;
+  /* The cobalt ladder, hue 219, light to dark */
+  --ink-palest: #c5cbd9;
+  --ink-palest-rgb: 197 203 217;
+  --ink-pale: #9aa6bf;
+  --ink-pale-rgb: 154 166 191;
+  --ink-mist: #6e7fa4; /* UI edges and large text only — 3.07 min */
+  --ink-mist-rgb: 110 127 164;
+  --ink-slate: #4c6089;
+  --ink-slate-rgb: 76 96 137;
+  --ink-cobalt: #2e4b7e; /* PRIMARY. the signature ink of the plates */
+  --ink-cobalt-rgb: 46 75 126;
+  --ink-deep: #16273f; /* the darkest bite */
+  --ink-deep-rgb: 22 39 63;
 
   /* Status inks — same press, different plates */
-  --ink-sepia: #6e5330;
-  --ink-sepia-rgb: 110 83 48;
-  --ink-madder: #8a3428;
-  --ink-madder-rgb: 138 52 40;
-  --ink-verdigris: #2a5f53;
-  --ink-verdigris-rgb: 42 95 83;
+  --ink-sepia: #6b5127;
+  --ink-sepia-rgb: 107 81 39;
+  --ink-madder: #8c3324;
+  --ink-madder-rgb: 140 51 36;
+  --ink-verdigris: #245c4e;
+  --ink-verdigris-rgb: 36 92 78;
 
   /* Text */
-  --text-primary: #141f2e;
-  --text-primary-rgb: 20 31 46;
-  --text-secondary: #44536a;
-  --text-secondary-rgb: 68 83 106;
-  --text-muted: #525f75;
-  --text-muted-rgb: 82 95 117;
+  --text-primary: #111e31;
+  --text-primary-rgb: 17 30 49;
+  --text-secondary: #3e4e68;
+  --text-secondary-rgb: 62 78 104;
+  --text-muted: #55627a;
+  --text-muted-rgb: 85 98 122;
 
-  /* Lines — engraving hairlines, never heavy borders */
-  --rule-hair: rgba(30, 54, 89, 0.16);
-  --rule-strong: #6f81a0;
+  /* Lines — engraved hairlines, never heavy borders */
+  --rule-hair: rgba(46, 75, 126, 0.15);
+  --rule-fine: rgba(46, 75, 126, 0.28);
+  --rule-strong: #717f9a; /* 3.08 min — clears 3:1 on every ground */
 
-  /* Laid-paper grain: fractal noise at 4% — design-system.md §4 hard ceiling.
+  /* Laid-paper grain: fractal noise at 3.5% — design-system.md §4 hard ceiling.
      Generated, not an asset, so it costs no request and stays crisp at any DPR. */
-  --paper-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.04'/%3E%3C/svg%3E");
+  --paper-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.035'/%3E%3C/svg%3E");
 
   /* Type — wired to next/font in layout.tsx */
-  --font-display: var(--font-cormorant), 'EB Garamond', Georgia, serif;
-  --font-body: var(--font-source-serif), Charter, Georgia, serif;
-  --font-ui: var(--font-inter), system-ui, sans-serif;
-  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+  --font-display: var(--font-bodoni), 'Didot', 'Bodoni MT', Georgia, serif;
+  --font-body: var(--font-spectral), 'Spectral', Charter, Georgia, serif;
+  --font-ui: var(--font-archivo), system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
 }
 
 @layer base {
@@ -89,10 +89,10 @@
     color: var(--text-primary);
     font-family: var(--font-body);
     font-size: 1rem;
-    line-height: 1.65;
-    /* Laid-paper grain. design-system.md §4 caps this at 4%; it is texture, not
-       ornament, so it is the one thing allowed to sit under the content column.
-       Tested against a full findings list, not an empty screen. */
+    line-height: 1.68;
+    /* Laid-paper grain. design-system.md §4 caps this at 3.5%; it is texture,
+       not ornament, so it is the one thing allowed to sit under the content
+       column. Tested against a full findings list, not an empty screen. */
     background-image: var(--paper-grain);
     background-repeat: repeat;
     background-size: 180px 180px;
@@ -100,28 +100,35 @@
 
   /* Accessibility beats aesthetics — §7 rule 1. */
   :focus-visible {
-    outline: 2px solid var(--ink-indigo);
+    outline: 2px solid var(--ink-cobalt);
     outline-offset: 2px;
-    border-radius: 2px;
+    border-radius: 1px;
   }
 
-  /* Never rely on the UA's faint default when a control is reached by keyboard. */
   [data-focus-ring]:focus-visible {
-    outline: 2px solid var(--ink-indigo);
+    outline: 2px solid var(--ink-cobalt);
     outline-offset: 2px;
   }
 
   ::selection {
-    background: rgba(30, 54, 89, 0.14);
+    background: rgba(46, 75, 126, 0.16);
   }
 
+  /*
+    Bodoni is a Didone: its thin strokes are genuinely hairlines. Below ~20px
+    they break up on a low-DPR screen, so display type is never set small — the
+    scale in tailwind.config.ts starts display at `lg`. Optical sizing keeps the
+    hairlines from thinning further as the size climbs.
+  */
   h1,
   h2,
   h3,
   h4 {
     font-family: var(--font-display);
     font-weight: 400;
+    font-optical-sizing: auto;
     color: var(--text-primary);
+    letter-spacing: -0.005em;
   }
 
   /* Controls are sans, so they never masquerade as manuscript. */
@@ -144,7 +151,7 @@
   /* The calm centre. Ornament stays outside it, always. */
   .content-column {
     width: 100%;
-    max-width: 1100px;
+    max-width: 1140px;
     margin-inline: auto;
     padding-inline: 24px;
   }
@@ -154,9 +161,59 @@
     max-width: 68ch;
   }
 
+  /*
+    A working leaf: margin vignette on the outer edge, text block in the open
+    field beside it.
+
+    `--margin-col` is the ONE declaration of that column's width. The plate is
+    `fixed` and takes its width from this variable; the leaf takes its padding
+    from the same variable. Previously the two were written separately in two
+    files with a note to keep them in step, which is exactly the arrangement
+    that eventually puts the engraving underneath the findings (§7 rule 2).
+    They cannot drift now.
+
+    Three tiers, and the art is present in all of them — see .margin-foot for
+    what happens at the narrow end. There is no width with no engraving.
+  */
+  :root {
+    --margin-col: 0px;
+  }
+
+  @media (min-width: 1024px) {
+    :root {
+      --margin-col: 236px;
+    }
+  }
+
+  @media (min-width: 1240px) {
+    :root {
+      --margin-col: clamp(300px, 25vw, 440px);
+    }
+  }
+
+  .leaf {
+    position: relative;
+    padding-left: var(--margin-col);
+  }
+
   /* Hairlines, not borders. */
   .hairline {
     border: 1px solid var(--rule-hair);
+  }
+
+  /*
+    Engraved label. Every piece of interface chrome — badges, step names, column
+    heads, table heads — is set this way: small, letterspaced, uppercase sans.
+    It is the one typographic gesture that carries the plate-label feeling into
+    the UI without pretending to be manuscript.
+  */
+  .engraved-label {
+    font-family: var(--font-ui);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    line-height: 1.4;
   }
 
   .skip-link {
@@ -164,8 +221,8 @@
     left: -9999px;
     top: 8px;
     z-index: 100;
-    background: var(--plate);
-    color: var(--ink-indigo);
+    background: var(--leaf);
+    color: var(--ink-cobalt);
     padding: 12px 16px;
     border: 1px solid var(--rule-strong);
     font-family: var(--font-ui);
@@ -174,6 +231,205 @@
   .skip-link:focus {
     left: 16px;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   The plates.
+
+   Deliberately OUTSIDE @layer components: Tailwind purges unused rules from a
+   layer, and these are applied via composed class names it cannot scan.
+
+   background-image is declared twice on purpose in each block — the plain url()
+   is the floor for browsers without typed image-set (Safari < 17); the
+   image-set overrides it everywhere else and serves AVIF. See
+   scripts/build-plates.md.
+   --------------------------------------------------------------------------- */
+
+/* --- The frontispiece: the wide plate, threshold screen only --------------- */
+.frontispiece {
+  background-repeat: no-repeat;
+  background-size: cover;
+  /* Anchored low so the luminous open centre fills the upper screen, which is
+     where the content goes (§4). */
+  background-position: center 72%;
+  background-image: url('/ornament/frontispiece-1700.webp');
+  background-image: image-set(
+    url('/ornament/frontispiece-1700.avif') type('image/avif'),
+    url('/ornament/frontispiece-1700.webp') type('image/webp')
+  );
+}
+
+@media (min-width: 1500px), (min-resolution: 1.5dppx) {
+  .frontispiece {
+    background-image: url('/ornament/frontispiece-2600.webp');
+    background-image: image-set(
+      url('/ornament/frontispiece-2600.avif') type('image/avif'),
+      url('/ornament/frontispiece-2600.webp') type('image/webp')
+    );
+  }
+}
+
+/* Narrow viewports: the open centre is too small to hold the wordmark and the
+   drop target at once, so the plate drops to a band at the foot of the screen
+   and the content runs on plain ivory above it (§4 rule 4). */
+.frontispiece-band {
+  background-position: center 86%;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 62%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 62%);
+}
+
+/* --- The margin plates: one per working screen ---------------------------- */
+/*
+   Measured, not guessed. Ink coverage was sampled on a 10x10 grid over each of
+   the four plates: every one is left-heavy (50-70% coverage in the left five
+   bands, 15-27% in the right three) and bottom-heavy (76-87% in the lowest two
+   rows, 0-8% in the top row).
+
+   So the plate is anchored bottom-left and masked twice — out to the right and
+   out toward the top — which dissolves it into the paper exactly where its own
+   ink is already thinning. Nothing is cropped and nothing is scrimmed: the mask
+   follows the composition rather than fighting it.
+*/
+.margin-plate {
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: left bottom;
+  /*
+    The fade holds the engraving at full strength across the left two thirds and
+    only releases it as it approaches the text column. The previous version fell
+    away from 30% and also erased the top third, which deleted the cypress and
+    the poplar — the tallest things in the composition — and left the working
+    screens looking blank next to a full-strength hero. The plates are already
+    sparse at the top (0-8% ink in the first band), so they need almost no help
+    there.
+  */
+  -webkit-mask-image: linear-gradient(to right, #000 64%, transparent 97%),
+    linear-gradient(to bottom, transparent 0%, #000 13%);
+  mask-image: linear-gradient(to right, #000 64%, transparent 97%),
+    linear-gradient(to bottom, transparent 0%, #000 13%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+/*
+  The foot band — the same plate, for viewports with no margin to spare.
+
+  There must be no width at which a working screen carries none of the art: that
+  is what made these pages read as unrelated to the threshold. Below the column
+  breakpoint the plate moves to the foot of the document instead of vanishing.
+
+  It is placed in normal flow AFTER the content, never fixed behind it, so text
+  can never cross it (§7 rule 2).
+*/
+.margin-foot {
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: left 72%;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 55%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 55%);
+}
+
+.plate-art[data-plate='1'] {
+  background-image: url('/ornament/margin-1-900.webp');
+  background-image: image-set(
+    url('/ornament/margin-1-900.avif') type('image/avif'),
+    url('/ornament/margin-1-900.webp') type('image/webp')
+  );
+}
+.plate-art[data-plate='2'] {
+  background-image: url('/ornament/margin-2-900.webp');
+  background-image: image-set(
+    url('/ornament/margin-2-900.avif') type('image/avif'),
+    url('/ornament/margin-2-900.webp') type('image/webp')
+  );
+}
+.plate-art[data-plate='3'] {
+  background-image: url('/ornament/margin-3-900.webp');
+  background-image: image-set(
+    url('/ornament/margin-3-900.avif') type('image/avif'),
+    url('/ornament/margin-3-900.webp') type('image/webp')
+  );
+}
+.plate-art[data-plate='4'] {
+  background-image: url('/ornament/margin-4-900.webp');
+  background-image: image-set(
+    url('/ornament/margin-4-900.avif') type('image/avif'),
+    url('/ornament/margin-4-900.webp') type('image/webp')
+  );
+}
+
+@media (min-resolution: 1.5dppx) {
+  .plate-art[data-plate='1'] {
+    background-image: url('/ornament/margin-1-1400.webp');
+    background-image: image-set(
+      url('/ornament/margin-1-1400.avif') type('image/avif'),
+      url('/ornament/margin-1-1400.webp') type('image/webp')
+    );
+  }
+  .plate-art[data-plate='2'] {
+    background-image: url('/ornament/margin-2-1400.webp');
+    background-image: image-set(
+      url('/ornament/margin-2-1400.avif') type('image/avif'),
+      url('/ornament/margin-2-1400.webp') type('image/webp')
+    );
+  }
+  .plate-art[data-plate='3'] {
+    background-image: url('/ornament/margin-3-1400.webp');
+    background-image: image-set(
+      url('/ornament/margin-3-1400.avif') type('image/avif'),
+      url('/ornament/margin-3-1400.webp') type('image/webp')
+    );
+  }
+  .plate-art[data-plate='4'] {
+    background-image: url('/ornament/margin-4-1400.webp');
+    background-image: image-set(
+      url('/ornament/margin-4-1400.avif') type('image/avif'),
+      url('/ornament/margin-4-1400.webp') type('image/webp')
+    );
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The plate mark.
+
+   A copperplate presses a rectangular indent into the sheet a little outside
+   the image. It is the single detail that separates an original impression from
+   a reproduction, and it costs two hairlines. Used once, on the threshold.
+
+   Only drawn where the full plate is: below 900px the frontispiece is a band
+   rather than an impression, so there is no plate to have left a mark — and at
+   that width its inner line ran straight through the drop target's own border.
+   --------------------------------------------------------------------------- */
+@media (min-width: 900px) {
+  .plate-mark::before,
+  .plate-mark::after {
+    content: '';
+    position: absolute;
+    pointer-events: none;
+    border: 1px solid var(--rule-hair);
+  }
+  .plate-mark::before {
+    inset: 18px;
+  }
+  .plate-mark::after {
+    inset: 22px;
+    border-color: rgba(46, 75, 126, 0.09);
+  }
+}
+
+/* citeproc emits its own wrappers; these keep an IEEE numeric label from
+   colliding with the card layout and let author-date styles run as plain prose. */
+.csl-entry .csl-left-margin {
+  display: inline;
+  margin-right: 0.4em;
+  color: var(--ink-cobalt);
+}
+.csl-entry .csl-right-inline {
+  display: inline;
+}
+.csl-entry .csl-bib-body,
+.csl-entry .csl-entry {
+  display: inline;
 }
 
 /* §6 — prefers-reduced-motion removes all of it. No exceptions. */
@@ -186,66 +442,4 @@
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
-}
-
-/* ---------------------------------------------------------------------------
-   The plate.
-
-   Deliberately OUTSIDE @layer components: Tailwind purges unused rules from a
-   layer, and these are applied via composed class names it cannot scan.
-
-   background-image is declared twice on purpose — the plain url() is the floor
-   for browsers without typed image-set (Safari < 17); the image-set overrides
-   it everywhere else and serves AVIF. See scripts/build-plates.md.
-   --------------------------------------------------------------------------- */
-.plate-img {
-  background-repeat: no-repeat;
-  background-image: url('/ornament/hero-1800.webp');
-  background-image: image-set(
-    url('/ornament/hero-1800.avif') type('image/avif'),
-    url('/ornament/hero-1800.webp') type('image/webp')
-  );
-}
-
-/* Retina and wide viewports get the larger encode. */
-@media (min-width: 1500px), (min-resolution: 1.5dppx) {
-  .plate-img {
-    background-image: url('/ornament/hero-2400.webp');
-    background-image: image-set(
-      url('/ornament/hero-2400.avif') type('image/avif'),
-      url('/ornament/hero-2400.webp') type('image/webp')
-    );
-  }
-}
-
-/* THRESHOLD — the plate full-bleed, anchored so its horizon sits low and the
-   sky fills the upper screen, which is where the content goes (§4). */
-.plate-full {
-  background-size: cover;
-  background-position: center 78%;
-}
-
-/* DESK — a horizon band at the foot of the viewport, below all content. The
-   working screens are calm ivory; this is the plate's ground edge only, and it
-   fades upward into the paper so there is no seam. */
-.plate-horizon {
-  background-size: cover;
-  background-position: center 88%;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 72%);
-  mask-image: linear-gradient(to bottom, transparent 0%, #000 72%);
-}
-
-/* citeproc emits its own wrappers; these keep an IEEE numeric label from
-   colliding with the card layout and let author-date styles run as plain prose. */
-.csl-entry .csl-left-margin {
-  display: inline;
-  margin-right: 0.4em;
-  color: var(--ink-indigo);
-}
-.csl-entry .csl-right-inline {
-  display: inline;
-}
-.csl-entry .csl-bib-body,
-.csl-entry .csl-entry {
-  display: inline;
 }

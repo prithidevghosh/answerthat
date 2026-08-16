@@ -8,6 +8,7 @@ a `style_id`, or the document carries one from style detection, or the export re
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,7 @@ from app.core.errors import ExportFailure
 from app.export.ast import citation_key_map, document_to_ast
 from app.export.pandoc import PandocResult, ast_to_latex
 from app.export.styles import SHORTLIST, style_path
+from app.export.unicode_latex import pdftex_unicode_preamble, scan_json_strings
 from app.ir.traversal import source_id_multiset
 
 __all__ = ["ExportResult", "export_latex", "build_bibliography"]
@@ -71,6 +73,22 @@ def build_bibliography(
     return entries
 
 
+def _apply_unicode_preamble(ast: dict, preamble: str | None) -> None:
+    """Put the character declarations on the AST's `header-includes`.
+
+    See `unicode_latex` for why they are needed: without them the `.tex` is valid but
+    only builds under xelatex/lualatex, and every pdflatex-based service — which is most
+    of them — stops on the first Greek letter.
+    """
+    if preamble is None:
+        ast["meta"].pop("header-includes", None)
+        return
+    ast["meta"]["header-includes"] = {
+        "t": "MetaBlocks",
+        "c": [{"t": "RawBlock", "c": ["latex", preamble]}],
+    }
+
+
 def export_latex(
     doc: Document,
     sources: Mapping[str, dict],
@@ -100,12 +118,29 @@ def export_latex(
     if suppress_bibliography:
         ast["meta"]["suppress-bibliography"] = {"t": "MetaBool", "c": True}
 
-    result: PandocResult = ast_to_latex(
-        ast,
-        csl_path=csl,
-        bibliography=bibliography,
-        standalone=standalone,
+    # Everything that can reach the output: the document itself, and the CSL-JSON that
+    # citeproc will format into the bibliography.
+    scanned = scan_json_strings(
+        json.dumps(ast, ensure_ascii=False) + json.dumps(bibliography, ensure_ascii=False)
     )
+    preamble = pdftex_unicode_preamble(scanned)
+    _apply_unicode_preamble(ast, preamble)
+
+    def render() -> PandocResult:
+        return ast_to_latex(ast, csl_path=csl, bibliography=bibliography, standalone=standalone)
+
+    result: PandocResult = render()
+
+    # citeproc emits characters of its own, from the CSL style and its locale, which no
+    # pre-scan of our inputs can see. If the rendered file turns out to need declarations
+    # we did not make, make them and render once more. One retry is enough: the only
+    # thing the second pass adds to the file is the ASCII of the declarations themselves.
+    if standalone:
+        widened = pdftex_unicode_preamble(scanned + result.stdout)
+        if widened != preamble:
+            _apply_unicode_preamble(ast, widened)
+            result = render()
+
     return ExportResult(
         latex=result.stdout,
         style_id=chosen_style,

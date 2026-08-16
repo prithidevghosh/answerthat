@@ -10,9 +10,9 @@ import type { ParsedReference, SourceRecord } from '@/lib/contracts';
 /**
  * One reference, at whatever tier it reached.
  *
- * The five tiers share one card: same plate, same fleurons, same spacing, same
- * type. What differs is the ink of the hairline, the seal, the label, and what
- * evidence the card is obliged to show. A quarantined reference is not a
+ * The five tiers share one card: same leaf, same spacing, same type. What
+ * differs is the ink of the rule down its outer edge, the seal, the label, and
+ * what evidence the card is obliged to show. A quarantined reference is not a
  * degraded resolved reference — it is a first-class outcome with its own
  * evidence (the raw string, verbatim), and it is laid out with the same care.
  */
@@ -82,7 +82,7 @@ export function ReferenceCard({
             href={source.provenance.external_url}
             target="_blank"
             rel="noreferrer noopener"
-            className="font-ui text-2xs text-indigo underline decoration-indigo/30 underline-offset-2 hover:decoration-indigo"
+            className="font-ui text-2xs text-cobalt underline decoration-cobalt/30 underline-offset-2 hover:decoration-cobalt"
           >
             View on {PROVIDER_NAME[source.provenance.provider]} ↗
           </a>
@@ -111,7 +111,7 @@ export function ReferenceCard({
           type="button"
           onClick={() => setShowRaw((v) => !v)}
           aria-expanded={showRaw}
-          className="mt-4 font-ui text-2xs text-indigo underline decoration-indigo/30 underline-offset-2 hover:decoration-indigo"
+          className="mt-4 font-ui text-2xs text-cobalt underline decoration-cobalt/30 underline-offset-2 hover:decoration-cobalt"
         >
           {showRaw ? 'Hide raw string' : 'Show raw string'}
         </button>

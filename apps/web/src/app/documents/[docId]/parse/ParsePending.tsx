@@ -66,10 +66,10 @@ export function ParsePending({ docId, initial }: { docId: string; initial: Parse
 
   return (
     <main id="main" className="content-column py-24">
-      <Plate className="px-8 py-10">
+      <Plate fleurons className="px-8 py-10">
         <div className="measure">
-          <span className="inline-flex items-center gap-3 font-ui text-xs font-medium text-indigo">
-            <Fleuron size={14} className="text-indigo/60" />
+          <span className="inline-flex items-center gap-3 font-ui text-xs font-medium text-cobalt">
+            <Fleuron size={14} className="text-cobalt/60" />
             Still parsing
           </span>
 
@@ -80,7 +80,7 @@ export function ParsePending({ docId, initial }: { docId: string; initial: Parse
           <div className="mt-5 h-px w-full bg-[var(--rule-hair)]">
             {pct !== null && (
               <div
-                className="h-px bg-indigo transition-[width] duration-ink ease-ink"
+                className="h-px bg-cobalt transition-[width] duration-ink ease-ink"
                 style={{ width: `${pct}%` }}
               />
             )}

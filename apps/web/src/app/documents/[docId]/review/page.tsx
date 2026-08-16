@@ -1,3 +1,4 @@
+import { MarginPlate, MarginFoot } from '@/components/Ornament';
 import { FixtureBanner } from '@/components/FixtureBanner';
 import { ConfigurationError } from '@/components/ConfigurationError';
 import { WorkbenchHeader } from '@/components/WorkbenchHeader';
@@ -42,6 +43,9 @@ export default async function ReviewPage({ params }: { params: Promise<{ docId: 
   return (
     <>
       <FixtureBanner />
+      {/* Pl. II. */}
+      <MarginPlate plate={2} />
+      <div className="leaf">
       <WorkbenchHeader
         docId={docId}
         current="review"
@@ -63,6 +67,8 @@ export default async function ReviewPage({ params }: { params: Promise<{ docId: 
           parse.document.metadata.style_id ?? parse.style?.style_id ?? 'chicago-author-date'
         }
       />
+        <MarginFoot plate={2} />
+      </div>
     </>
   );
 }

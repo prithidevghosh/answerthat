@@ -1,3 +1,4 @@
+import { MarginPlate, MarginFoot } from '@/components/Ornament';
 import { FixtureBanner } from '@/components/FixtureBanner';
 import { ConfigurationError } from '@/components/ConfigurationError';
 import { WorkbenchHeader } from '@/components/WorkbenchHeader';
@@ -44,13 +45,18 @@ export default async function EditPage({ params }: { params: Promise<{ docId: st
   return (
     <>
       <FixtureBanner />
-      <WorkbenchHeader
-        docId={docId}
-        current="edit"
-        title={document.metadata.title}
-        version={document.version}
-      />
-      <EditConsole docId={docId} />
+      {/* Pl. III. */}
+      <MarginPlate plate={3} />
+      <div className="leaf">
+        <WorkbenchHeader
+          docId={docId}
+          current="edit"
+          title={document.metadata.title}
+          version={document.version}
+        />
+        <EditConsole docId={docId} />
+        <MarginFoot plate={3} />
+      </div>
     </>
   );
 }

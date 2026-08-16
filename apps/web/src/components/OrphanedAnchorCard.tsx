@@ -110,7 +110,7 @@ export function OrphanedAnchorCard({
                 type="button"
                 disabled={busy}
                 onClick={() => onResolve({ anchor_id: option.anchor_id, action: 'keep' })}
-                className="rounded border border-indigo/45 px-5 py-2 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06] disabled:opacity-50"
+                className="rounded border border-cobalt/45 px-5 py-2 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06] disabled:opacity-50"
               >
                 Keep here
               </button>
@@ -127,7 +127,7 @@ export function OrphanedAnchorCard({
                     target_span_id: option.best_span_id,
                   })
                 }
-                className="rounded border border-indigo/45 px-5 py-2 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06] disabled:opacity-50"
+                className="rounded border border-cobalt/45 px-5 py-2 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06] disabled:opacity-50"
               >
                 Move to closest match
               </button>

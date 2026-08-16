@@ -268,3 +268,86 @@ def test_rendered_entry_differs_by_style(sources: dict) -> None:
     apa = render_bibliography_entries(entry, csl_path=style_path("apa", STYLES_DIR))[0]
     ieee = render_bibliography_entries(entry, csl_path=style_path("ieee", STYLES_DIR))[0]
     assert apa != ieee
+
+
+# ---------------------------------------------------------------- pdfLaTeX compilability
+
+
+def _unicode_doc() -> Document:
+    """A paper carrying the characters a PDF-parsed maths paper actually carries."""
+    b = DocumentBuilder("doc_unicode", title="Estimating θ under p ∼ N(0, σ²)")
+    section = b.section("Method")
+    section.paragraph("We optimise θ by ∇θ descent, with α ∈ (0, 1] and x ∼ p data .")
+    section.paragraph("The support is Supp(p) ∪ Supp(q); ∂f/∂x → 0 as β ⩾ 1.")
+    return b.build()
+
+
+def test_unicode_characters_survive_into_the_output() -> None:
+    """The text is not transliterated. Fidelity first — the preamble does the work."""
+    latex = export_latex(_unicode_doc(), {}, style_id="apa", styles_dir=STYLES_DIR).latex
+    for char in "θ∇α∈∼∪∂→β⩾":
+        assert char in latex, f"{char!r} was altered or dropped from the export"
+
+
+def test_export_declares_every_character_pdftex_cannot_set() -> None:
+    """Without these, pdflatex stops on the first Greek letter and no PDF is produced."""
+    latex = export_latex(_unicode_doc(), {}, style_id="apa", styles_dir=STYLES_DIR).latex
+    assert "\\ifPDFTeX" in latex
+    for char in "θ∇α∈∼∪∂→β⩾":
+        assert f"\\DeclareUnicodeCharacter{{{ord(char):04X}}}" in latex, f"{char!r} undeclared"
+
+
+def test_no_undeclared_character_reaches_the_output(sample_doc: Document, sources: dict) -> None:
+    """The invariant, stated over the finished file: nothing pdfTeX cannot set is left over.
+
+    This is the check that would have caught the export shipping a `.tex` no pdflatex-based
+    service could build.
+    """
+    from app.export.unicode_latex import undeclarable  # noqa: PLC0415
+
+    for style_id in sorted(SHORTLIST):
+        latex = export_latex(sample_doc, sources, style_id=style_id, styles_dir=STYLES_DIR).latex
+        body = latex.split("\\begin{document}", 1)[-1]
+        leftover = [c for c in undeclarable(body) if f"{ord(c):04X}" not in latex]
+        assert not leftover, f"{style_id}: undeclared {leftover!r}"
+
+
+def test_ascii_only_paper_gets_no_extra_preamble() -> None:
+    """A paper that never needed the declarations should not carry them."""
+    b = DocumentBuilder("doc_ascii", title="A Plain Paper")
+    b.section("Intro").paragraph("Nothing here needs declaring.")
+    latex = export_latex(b.build(), {}, style_id="apa", styles_dir=STYLES_DIR).latex
+    assert "\\DeclareUnicodeCharacter" not in latex
+
+
+# ---------------------------------------------------------------- unresolved citations
+
+
+def _unresolved_doc() -> Document:
+    b = DocumentBuilder("doc_unres", title="T")
+    section = b.section("Related work")
+    block, span = section.paragraph("Mixing poses a problem for MCMC methods here.")
+    block.anchor(span, source_ids=[], offset_in_span=39, original_marker_text="[3]")
+    return b.build()
+
+
+def test_an_anchor_citing_nothing_is_visible_not_silent() -> None:
+    """It used to render as `\\label{anc_...}{}` — the marker gone, the round trip green."""
+    latex = export_latex(_unresolved_doc(), {}, style_id="nature", styles_dir=STYLES_DIR).latex
+    assert "CITATION UNRESOLVED" in _unwrapped(latex)
+    assert "[3]" in _unwrapped(latex).replace("{[}", "[").replace("{]}", "]")
+    assert not re.search(r"\\label\{anc_[0-9a-f]+\}\{\}", latex)
+
+
+def test_an_unresolved_anchor_still_keeps_its_id() -> None:
+    """The marker is additional to the anchor label, never a replacement for it."""
+    doc = _unresolved_doc()
+    latex = export_latex(doc, {}, style_id="nature", styles_dir=STYLES_DIR).latex
+    for anchor_id in anchor_ids(doc):
+        assert anchor_id in latex
+
+
+def test_an_unresolved_anchor_does_not_block_the_round_trip() -> None:
+    doc = _unresolved_doc()
+    report = verify_round_trip(doc, {}, style_id="nature", styles_dir=STYLES_DIR)
+    assert report.ok, report

@@ -15,7 +15,7 @@ export interface AnchorEntry {
 const FATE: Record<AnchorFate, { label: string; tone: string; seal: 'filled' | 'open' | 'dangling' }> = {
   persisted: {
     label: 'kept',
-    tone: 'text-indigo border-indigo/35 bg-indigo/[0.04]',
+    tone: 'text-cobalt border-cobalt/35 bg-cobalt/[0.04]',
     seal: 'filled',
   },
   added: {

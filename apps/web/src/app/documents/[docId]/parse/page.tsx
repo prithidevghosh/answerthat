@@ -1,4 +1,4 @@
-import { HorizonBand } from '@/components/Ornament';
+import { MarginPlate, MarginFoot } from '@/components/Ornament';
 import { FixtureBanner } from '@/components/FixtureBanner';
 import { ConfigurationError } from '@/components/ConfigurationError';
 import { WorkbenchHeader } from '@/components/WorkbenchHeader';
@@ -73,15 +73,19 @@ export default async function ParsePage({ params }: { params: Promise<{ docId: s
   return (
     <>
       <FixtureBanner />
-      <WorkbenchHeader
-        docId={docId}
-        current="parse"
-        title={result.document.metadata.title}
-        version={result.document.version}
-      />
-      <ParseInspector docId={docId} result={result} sources={sources} />
-      {/* The plate returns only at the foot, after the content — never behind it. */}
-      <HorizonBand />
+      {/* Pl. I. The plate is held in the outer margin and the text block sits in
+          the open field beside it — see the note on `.leaf` in globals.css. */}
+      <MarginPlate plate={1} />
+      <div className="leaf">
+        <WorkbenchHeader
+          docId={docId}
+          current="parse"
+          title={result.document.metadata.title}
+          version={result.document.version}
+        />
+        <ParseInspector docId={docId} result={result} sources={sources} />
+        <MarginFoot plate={1} />
+      </div>
     </>
   );
 }

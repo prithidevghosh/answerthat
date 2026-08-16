@@ -55,7 +55,7 @@ export function CountStrip({
                 aria-pressed={isActive}
                 className={`group flex items-baseline gap-2.5 rounded px-1 transition-colors duration-ink ease-ink ${
                   INK_TEXT[status.ink]
-                } ${isActive ? 'bg-indigo/[0.07]' : 'hover:bg-indigo/[0.04]'}`}
+                } ${isActive ? 'bg-cobalt/[0.07]' : 'hover:bg-cobalt/[0.04]'}`}
               >
                 <span className="font-display text-3xl leading-none tabular-nums">
                   {counts[tier]}

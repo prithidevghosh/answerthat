@@ -1,35 +1,45 @@
 import type { Metadata } from 'next';
-import { Cormorant_Garamond, Source_Serif_4, Inter, JetBrains_Mono } from 'next/font/google';
+import { Bodoni_Moda, Spectral, Archivo, IBM_Plex_Mono } from 'next/font/google';
 import './globals.css';
 
-// design-system.md §3. Loaded through next/font so they are self-hosted and
-// carry no layout shift — no external font CDN in the render path.
-const cormorant = Cormorant_Garamond({
+/**
+ * design-system.md §3. Loaded through next/font so they are self-hosted and
+ * carry no layout shift — no external font CDN in the render path.
+ *
+ * The pairing is the plates' own logic. Bodoni is a Didone: extreme stroke
+ * contrast, unbracketed hairline serifs — the letterform the copperplate
+ * engravers were cutting at exactly the moment these scenes depict. It carries
+ * the whole period reference, so nothing else has to.
+ *
+ * Spectral then does the reading. It is a Production Type face, drawn in Paris
+ * for long-form text on screen: low contrast, generous x-height, real italics.
+ * A researcher reads forty findings on it at 11pm, which is a job Bodoni would
+ * do badly and Spectral does well.
+ */
+const bodoni = Bodoni_Moda({
   subsets: ['latin'],
-  weight: ['400', '500', '600'],
-  variable: '--font-cormorant',
+  variable: '--font-bodoni',
   display: 'swap',
 });
 
-const sourceSerif = Source_Serif_4({
+const spectral = Spectral({
   subsets: ['latin'],
-  weight: ['400', '600'],
+  weight: ['400', '500', '600'],
   style: ['normal', 'italic'],
-  variable: '--font-source-serif',
+  variable: '--font-spectral',
   display: 'swap',
 });
 
-const inter = Inter({
+const archivo = Archivo({
   subsets: ['latin'],
-  weight: ['400', '500', '600'],
-  variable: '--font-inter',
+  variable: '--font-archivo',
   display: 'swap',
 });
 
-const jetbrains = JetBrains_Mono({
+const plexMono = IBM_Plex_Mono({
   subsets: ['latin'],
   weight: ['400', '500'],
-  variable: '--font-jetbrains',
+  variable: '--font-plex-mono',
   display: 'swap',
 });
 
@@ -43,7 +53,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="en"
-      className={`${cormorant.variable} ${sourceSerif.variable} ${inter.variable} ${jetbrains.variable}`}
+      className={`${bodoni.variable} ${spectral.variable} ${archivo.variable} ${plexMono.variable}`}
     >
       <body>
         <a href="#main" className="skip-link">

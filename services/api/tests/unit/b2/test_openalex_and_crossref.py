@@ -206,6 +206,30 @@ async def test_filter_syntax_characters_are_stripped_from_a_title(oa, openalex_w
     assert transport.requests[-1].url.params["filter"] == "title.search:Attention Memory Recall A Study"
 
 
+async def test_search_operators_are_stripped_from_claim_text(oa, openalex_work) -> None:
+    """`|` is OpenAlex's OR operator, and it 400s the whole request rather than escaping it.
+
+    The conditional probability below is ordinary prose in an ML paper, and sending it
+    verbatim failed the claim — and with it the review job, since candidate generation
+    does not forgive exceptions.
+    """
+    provider, transport = oa({"/works": {"results": [openalex_work]}})
+    await provider.search_works(
+        "The objective for D maximizes the log-likelihood of P (Y = y|x), where y = 1."
+    )
+    search = transport.requests[-1].url.params["search"]
+    assert search == (
+        "The objective for D maximizes the log likelihood of P Y y x where y 1"
+    )
+
+
+async def test_a_claim_of_pure_notation_spends_no_credit(oa, openalex_work) -> None:
+    """No words left means no query to ask — and no reason to spend a list query asking it."""
+    provider, transport = oa({"/works": {"results": [openalex_work]}})
+    assert await provider.search_works("|| = (|) ,") == []
+    assert transport.requests == []
+
+
 # --------------------------------------------------------------------------- Crossref
 
 

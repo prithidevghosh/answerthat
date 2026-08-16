@@ -148,12 +148,12 @@ export function EditConsole({ docId }: { docId: string }) {
     <main id="main" className="relative z-10 content-column py-16">
       <div className="flex flex-wrap items-end justify-between gap-6">
         <div>
-          <p className="font-ui text-2xs uppercase tracking-[0.14em] text-muted">Edit console</p>
+          <p className="engraved-label text-muted">Edit console</p>
           <h1 className="mt-2 font-display text-3xl text-primary">Edit by instruction</h1>
         </div>
         <Link
           href={`/documents/${docId}/export`}
-          className="rounded border border-indigo/40 px-5 py-2.5 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06]"
+          className="rounded border border-cobalt/40 px-5 py-2.5 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06]"
         >
           Export →
         </Link>
@@ -175,7 +175,7 @@ export function EditConsole({ docId }: { docId: string }) {
 
       {phase === 'planning' && (
         <div className="mt-16 flex flex-col items-center py-12 text-center" aria-live="polite">
-          <Fleuron size={20} className="text-indigo/40" />
+          <Fleuron size={20} className="text-cobalt/40" />
           <p className="mt-5 font-display text-xl text-primary">Planning your edit</p>
           <p className="measure mt-2 text-xs leading-relaxed text-secondary">
             The planner is turning your instruction into typed operations. Every one of them is
@@ -236,7 +236,7 @@ export function EditConsole({ docId }: { docId: string }) {
             <section aria-labelledby="anchors-heading">
               <h2
                 id="anchors-heading"
-                className="font-ui text-2xs uppercase tracking-[0.14em] text-muted"
+                className="engraved-label text-muted"
               >
                 Citations needing a decision
               </h2>
@@ -258,7 +258,7 @@ export function EditConsole({ docId }: { docId: string }) {
           <section aria-labelledby="changes-heading">
             <h2
               id="changes-heading"
-              className="font-ui text-2xs uppercase tracking-[0.14em] text-muted"
+              className="engraved-label text-muted"
             >
               Proposed changes
             </h2>
@@ -300,7 +300,7 @@ export function EditConsole({ docId }: { docId: string }) {
             <section aria-labelledby="rejected-heading">
               <h2
                 id="rejected-heading"
-                className="font-ui text-2xs uppercase tracking-[0.14em] text-muted"
+                className="engraved-label text-muted"
               >
                 Refused by the kernel
               </h2>
@@ -315,7 +315,16 @@ export function EditConsole({ docId }: { docId: string }) {
       )}
 
       {/* Command input, at the bottom — design-system.md §5. */}
-      <form onSubmit={submit} className="sticky bottom-0 z-20 mt-16 bg-paper/95 pb-8 pt-6 backdrop-blur-[2px]">
+      {/*
+        Opaque, with a hairline to sit on. At 95% the diff card scrolling under
+        this bled through it as a grey smear — a translucent surface over
+        running text reads as a rendering fault, not as depth. The composer is
+        an instrument at the foot of the desk; it gets a hard edge.
+      */}
+      <form
+        onSubmit={submit}
+        className="sticky bottom-0 z-20 mt-16 border-t border-hair bg-paper pb-8 pt-6"
+      >
         <div className="h-px w-full bg-[var(--rule-hair)]" />
         <label htmlFor="command" className="mt-6 block font-ui text-2xs uppercase tracking-[0.12em] text-muted">
           Instruction
@@ -333,12 +342,12 @@ export function EditConsole({ docId }: { docId: string }) {
             }}
             placeholder="Tell Answerthat what to change…"
             disabled={phase === 'planning'}
-            className="min-w-0 flex-1 resize-y rounded border border-[var(--rule-strong)] bg-plate px-4 py-3 font-body text-base leading-relaxed text-primary placeholder:text-muted focus:border-indigo disabled:opacity-60"
+            className="min-w-0 flex-1 resize-y rounded border border-[var(--rule-strong)] bg-leaf px-4 py-3 font-body text-base leading-relaxed text-primary placeholder:text-muted focus:border-cobalt disabled:opacity-60"
           />
           <button
             type="submit"
             disabled={phase === 'planning' || command.trim() === ''}
-            className="h-fit self-end rounded border border-indigo/45 px-6 py-3 font-ui text-xs text-indigo transition-colors duration-ink ease-ink hover:bg-indigo/[0.06] disabled:opacity-40"
+            className="h-fit self-end rounded border border-cobalt/45 px-6 py-3 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06] disabled:opacity-40"
           >
             {phase === 'planning' ? 'Planning…' : 'Propose changes'}
           </button>
