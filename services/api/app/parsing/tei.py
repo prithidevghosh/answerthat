@@ -206,6 +206,59 @@ def _caption(element: etree._Element) -> str:
     return own[:300] if own else "(no caption extracted)"
 
 
+def _section_page(section: Section, coordinates: dict[str, list[Coordinate]]) -> int | None:
+    """The page a section starts on, read from the first of its parts that has coordinates."""
+    for key in (section.id, *(b.id for b in section.blocks)):
+        page = _first_page(coordinates.get(key, []))
+        if page is not None:
+            return page
+    return None
+
+
+def _place_floats(
+    floats: list[etree._Element],
+    *,
+    sections: list[Section],
+    doc_id: str,
+    coordinates: dict[str, list[Coordinate]],
+) -> None:
+    """Attach each floating figure/table/equation to the section printed on its page.
+
+    Falls back to the last section when a float has no coordinates or lands before the
+    first section that does — appending is not ideal, but it keeps the block in the
+    document, and a float silently dropped is worse than a float in the wrong place.
+    """
+    if not floats or not sections:
+        return
+
+    pages = [(index, _section_page(s, coordinates)) for index, s in enumerate(sections)]
+    known = [(index, page) for index, page in pages if page is not None]
+
+    for element in floats:
+        boxes = _coords(element)
+        page = _first_page(boxes)
+
+        target = len(sections) - 1
+        if page is not None and known:
+            # The last section that had started by the time this page was typeset.
+            started = [index for index, section_page in known if section_page <= page]
+            target = started[-1] if started else known[0][0]
+
+        section = sections[target]
+        block_id = ids.stable_id(ids.BLOCK, doc_id, section.order, len(section.blocks))
+        if boxes:
+            coordinates[block_id] = boxes
+        section.blocks.append(
+            Block(
+                id=block_id,
+                type=_block_type(element),  # type: ignore[arg-type]
+                order=len(section.blocks),
+                spans=[],
+                placeholder_caption=_caption(element),
+            )
+        )
+
+
 def _section_level(head: etree._Element | None) -> int:
     """GROBID numbers headings in `@n` — "3.1" is a level-2 heading."""
     if head is None:
@@ -332,14 +385,23 @@ def tei_to_ir(tei_xml: str, *, doc_id: str) -> ParsedDocument:
         ]
         _add_section(_text(head), _section_level(head), children, head)
 
-    # Floating figures and tables are siblings of the divs, not children.
+    # Floating figures, tables and equations are siblings of the divs, not children —
+    # GROBID hoists them out of the flow because that is where the PDF put them. Parking
+    # them all in one trailing "Figures and Tables" section, as this used to, moves every
+    # figure in the paper to the back and reads nothing like the original. Their
+    # coordinates carry the page they were printed on, so each one goes to the section
+    # that was being typeset on that page instead.
     floats = [
         child
         for child in body
         if etree.QName(child).localname in {"figure", "formula"}
     ]
-    if floats:
-        _add_section("Figures and Tables", 1, floats)
+    _place_floats(
+        floats,
+        sections=sections,
+        doc_id=doc_id,
+        coordinates=coordinates,
+    )
 
     for orphan in orphans:
         quarantine.append(

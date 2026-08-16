@@ -52,10 +52,37 @@ def test_abstract_becomes_a_section(parsed) -> None:
 
 def test_sections_and_levels(parsed) -> None:
     titles = tv.section_titles(parsed.document)
-    assert titles == ["Abstract", "Introduction", "Experimental Setup", "Figures and Tables"]
+    assert titles == ["Abstract", "Introduction", "Experimental Setup"]
     levels = {s.title: s.level for s in parsed.document.sections}
     assert levels["Introduction"] == 1
     assert levels["Experimental Setup"] == 2  # GROBID's @n="2.1"
+
+
+def test_floats_land_in_a_real_section_not_a_dump_at_the_end(parsed) -> None:
+    """Floats used to be swept into a trailing "Figures and Tables" section.
+
+    That moved every figure in the paper to the back, which is not what the paper looked
+    like. GROBID hoists them out of the flow, but their coordinates say which page they
+    were printed on, so they go back to the section being typeset there.
+    """
+    titles = tv.section_titles(parsed.document)
+    assert "Figures and Tables" not in titles
+
+    by_title = {s.title: s for s in parsed.document.sections}
+    assert [b.type for b in by_title["Introduction"].blocks] == ["paragraph", "paragraph", "figure"]
+    assert [b.type for b in by_title["Experimental Setup"].blocks] == [
+        "paragraph",
+        "equation",
+        "table",
+    ]
+
+
+def test_no_float_is_dropped_on_the_way_in(parsed) -> None:
+    """Placement is a judgement call; keeping the block is not."""
+    kinds = [b.type for _, b in tv.iter_blocks(parsed.document)]
+    assert kinds.count("figure") == 1
+    assert kinds.count("table") == 1
+    assert kinds.count("equation") == 1
 
 
 def test_a_span_is_a_sentence(parsed) -> None:

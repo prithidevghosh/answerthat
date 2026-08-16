@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.core.contracts import Document
+from app.export.ast import abstract_section as from_ast_abstract
 from app.export.latex import ExportResult, export_latex
 from app.export.pandoc import run_pandoc
 from app.ir import ids
@@ -204,6 +205,17 @@ def verify_round_trip(
 
     meta_title = ast.get("meta", {}).get("title")
     found_title = _inline_text(meta_title["c"]) if meta_title else None
+
+    # The abstract is exported as an `abstract` environment, so pandoc reads it back as
+    # metadata rather than as body blocks. It is still the paper's first section and its
+    # paragraphs are still the paper's paragraphs — counting only `blocks` would report it
+    # as content lost in export, which is exactly backwards.
+    if from_ast_abstract(doc) is not None:
+        meta_abstract = ast.get("meta", {}).get("abstract")
+        abstract_blocks = meta_abstract.get("c", []) if meta_abstract else []
+        _collect(abstract_blocks, headers=headers, paragraphs=paragraphs, span_ids=span_ids)
+        if meta_abstract:
+            headers.insert(0, (1, "Abstract"))
 
     # Read anchors out of the output on their own terms — by ID prefix, not by asking
     # "is it one of the ones I expected". Matching against the expected set would make

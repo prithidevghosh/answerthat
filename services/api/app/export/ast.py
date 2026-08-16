@@ -23,7 +23,13 @@ from app.core.contracts import Block, CitationAnchor, Document, Section, Span
 from app.core.errors import ExportFailure
 from app.export.pandoc import PANDOC_API_VERSION
 
-__all__ = ["document_to_ast", "citation_key_map", "PLACEHOLDER_PREFIXES", "UNRESOLVED_CITATION"]
+__all__ = [
+    "document_to_ast",
+    "citation_key_map",
+    "abstract_section",
+    "PLACEHOLDER_PREFIXES",
+    "UNRESOLVED_CITATION",
+]
 
 # An anchor that cites nothing used to render as an empty Cite, which pandoc writes as
 # `\phantomsection\label{anc_...}{}` — the label survives, so the round-trip check passes,
@@ -200,13 +206,47 @@ def _section_to_ast(section: Section, keys: Mapping[str, str]) -> list[dict]:
     return blocks
 
 
+def abstract_section(doc: Document) -> Section | None:
+    """The document's abstract, if it leads the paper.
+
+    The TEI mapping stores the abstract as an ordinary first section because it *is* part
+    of the paper and reviewers cite it. On the way out it should be an `abstract`
+    environment rather than `\\section{Abstract}` — that is what the original had, and a
+    paper whose abstract renders as a numbered section does not look like the paper.
+    Matched by position and title together, so a paper with a later section that happens
+    to discuss abstracts is untouched.
+    """
+    ordered = sorted(doc.sections, key=lambda s: s.order)
+    if not ordered:
+        return None
+    first = ordered[0]
+    if first.level == 1 and first.title.strip().lower() == "abstract":
+        return first
+    return None
+
+
 def document_to_ast(doc: Document, keys: Mapping[str, str]) -> dict:
     """Full document → Pandoc AST. `keys` comes from `citation_key_map`."""
+    abstract = abstract_section(doc)
+
     blocks: list[dict] = []
     for section in sorted(doc.sections, key=lambda s: s.order):
+        if section is abstract:
+            continue
         blocks.extend(_section_to_ast(section, keys))
 
     meta: dict = {}
+
+    # The original paper numbered its sections; pandoc's default is not to. Left off, the
+    # export reads as a different document at a glance, before anyone reaches the text.
+    meta["numbersections"] = {"t": "MetaBool", "c": True}
+
+    if abstract is not None:
+        abstract_blocks: list[dict] = []
+        for block in sorted(abstract.blocks, key=lambda b: b.order):
+            abstract_blocks.extend(_block_to_ast(block, keys))
+        if abstract_blocks:
+            meta["abstract"] = {"t": "MetaBlocks", "c": abstract_blocks}
     if doc.metadata.title:
         meta["title"] = {
             "t": "MetaInlines",

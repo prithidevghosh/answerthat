@@ -270,7 +270,7 @@ async def test_the_ingested_document_survives_the_export_round_trip(tei_xml: str
     )
     assert report.failures() == [], report.failures()
     assert report.found_title == "Revisiting Quadratic Attention on Modern Hardware"
-    assert report.found_sections == ["Abstract", "Introduction", "Experimental Setup", "Figures and Tables"]
+    assert report.found_sections == ["Abstract", "Introduction", "Experimental Setup"]
 
 
 async def test_the_ingested_document_persists_with_a_version(tei_xml: str) -> None:

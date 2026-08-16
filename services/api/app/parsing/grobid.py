@@ -32,7 +32,11 @@ __all__ = ["GrobidClient", "GrobidOptions", "TEI_COORDINATE_ELEMENTS"]
 
 # The frontend shows the user where each reference and heading came from on the page,
 # which needs coordinates on exactly these elements. Asking later means parsing again.
-TEI_COORDINATE_ELEMENTS = ("ref", "biblStruct", "head", "p")
+# `figure` and `formula` earn their place here: their coordinates are a page number and a
+# bounding box in the *original* PDF, which is what lets the export crop the real figure,
+# table, or equation out of the source rather than emitting a placeholder for it (ADR-008
+# was written before we were asking GROBID for these).
+TEI_COORDINATE_ELEMENTS = ("ref", "biblStruct", "head", "p", "figure", "formula")
 
 _BUSY = 503
 _NO_CONTENT = 204
