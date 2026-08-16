@@ -8,8 +8,7 @@ implemented, it is merely written.
 from __future__ import annotations
 
 import pytest
-from conftest import TEST_BAND, AlwaysRenders
-from fakes import (
+from b3_fakes import (
     BagOfWordsEmbedder,
     FakeFingerprintStore,
     ScriptedClaims,
@@ -17,6 +16,7 @@ from fakes import (
     ScriptedTextModel,
     ScriptedVerifier,
 )
+from b3_support import TEST_BAND, AlwaysRenders
 
 from app.agent.executor import ExecutionError, OperationExecutor, resolve_blocks
 from app.agent.kernel import (

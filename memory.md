@@ -263,6 +263,27 @@ rule that goes with it — a row already `failed` is never overwritten by the ow
 live status, because a killed worker's in-process state is frozen at `running` and would argue
 itself back to life.
 
+2026-08-16 · B3 · A lazily-bound factory can be present, non-None, and dead
+`services.review is not None` proved only that a callable had been stored. `get_review_runner()`
+builds its pipeline *per job*, so `build_review_runner(document_store)` had never actually run —
+the first real review would have been the first execution of that code path. Calling the factory
+in a test found it fine, but the check is the point: **for any lazy binding, the boot-time
+assertion is worthless and the test has to invoke it.** `test_composition_root.py` now builds
+`Services` against the real B1/B2 packages (construction is pure object assembly, no I/O) and
+calls the factory. Same family as the "Protocol with no implementation" note above.
+
+2026-08-16 · B3 · `from conftest import …` resolves to whichever sibling conftest loaded first
+`b1/`, `b2/` and `b3/` each have a `conftest.py`, all imported into `sys.modules` under the bare
+name `conftest`. `pytest tests/unit` happens to work; `pytest tests/unit/b3 tests/unit/b2` fails
+with `ImportError: cannot import name 'X' from 'conftest' (…/b2/conftest.py)` — pointing at a file
+that has nothing to do with the failure. Predates this session (`from conftest import
+AlwaysRenders`) and would have hit anyone reordering CI args. Fixed in b3 by moving the
+importable helpers to uniquely named `b3_support.py` / `b3_fakes.py` and leaving `conftest.py`
+holding fixtures only, which pytest resolves per-directory and which were never ambiguous.
+**b1 and b2 still import from the bare `conftest` name** — same trap, their call. Second instance
+of "passes per-directory, fails on a different collection order" in this file; if it appears a
+third time it is worth a CI job that shuffles the argument order.
+
 2026-08-16 · B3 · Prompt files must be *read* at import, not just *exist*
 Moving `prompts.py` → `prompts/` (ADR-019) is only half the job: if the loader falls back to `""`
 on a missing file, the model runs with no instructions and returns plausible output for the wrong
@@ -286,6 +307,15 @@ verifier. `get_review_runner()` in `app/review/runner.py` wants a zero-argument 
 so bind it as `lambda: build_review_runner(document_store)`. Build it through that factory
 rather than by hand: `prefilter=` is optional on `ReviewRunner` and omitting it costs
 nothing visible while multiplying the per-claim model spend. · 2026-08-16
+**B3's half closed in `3379f07`, verified in `test_composition_root.py`.**
+`app/api/deps.py::_bind_review` binds
+`get_review_runner(settings, review_runner_factory=lambda: build_review_runner(documents, settings))`.
+The factory is deliberately lazy — it resolves the document store per job, so a review started
+after a rebind picks up the current one. Verified rather than assumed: the tests call the factory
+and assert it yields a `ReviewRunner`, that `pipeline.documents is services.documents`, and that
+`prefilter` is present, because a lazy binding that raises when called looks identical at boot to
+one that works. Signature-binding tests pin B2's `start`/`status` as **sync** and `stream` as an
+async generator, which is why the routes go through `maybe_await`.
 
 [RESOLVED] B1 → B3 · Persist the uploaded PDF to `{UPLOAD_DIR}/{doc_id}.pdf` · Done in
 `f72381e`. `documents.py::upload` writes the bytes to `{UPLOAD_DIR}/{doc_id}.pdf` **before**

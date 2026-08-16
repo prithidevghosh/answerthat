@@ -10,7 +10,7 @@ model to be tested, which is the whole argument of ADR-007.
 from __future__ import annotations
 
 import pytest
-from conftest import (
+from b3_support import (
     AlwaysRenders,
     NeverRenders,
     does_not_address,

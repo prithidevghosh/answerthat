@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from conftest import make_anchor, make_span
-from fakes import BagOfWordsEmbedder, FakeFingerprintStore, ScriptedTextModel
+from b3_fakes import BagOfWordsEmbedder, FakeFingerprintStore, ScriptedTextModel
+from b3_support import make_anchor, make_span
 
 from app.agent.thresholds import ReattachmentBand
 from app.agent.transform import (

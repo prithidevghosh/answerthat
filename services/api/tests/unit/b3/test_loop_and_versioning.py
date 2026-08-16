@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from conftest import TEST_BAND, AlwaysRenders
-from fakes import (
+from b3_fakes import (
     BagOfWordsEmbedder,
     FakeFingerprintStore,
     InMemoryDocumentStore,
@@ -14,6 +13,7 @@ from fakes import (
     ScriptedTextModel,
     ScriptedVerifier,
 )
+from b3_support import TEST_BAND, AlwaysRenders
 
 from app.agent.executor import OperationExecutor
 from app.agent.kernel import InvariantKernel
@@ -431,7 +431,7 @@ async def test_approving_an_unknown_change_id_is_an_error(sources, base_document
 async def test_the_loop_warms_every_source_id_before_the_kernel_checks_it(base_document):
     """An unwarmed id raises instead of reporting absence, so a missed warm would surface
     as a crash — or worse, be caught somewhere and read as a fabricated source."""
-    from conftest import FakeSourceReader
+    from b3_support import FakeSourceReader
 
     strict = FakeSourceReader(["s2:aaa", "s2:bbb", "openalex:W123"], strict=True)
     loop, _model, _kernel = build_loop(
@@ -456,7 +456,7 @@ async def test_the_loop_warms_every_source_id_before_the_kernel_checks_it(base_d
 async def test_a_fabricated_id_is_warmed_too_so_the_reject_rests_on_a_real_answer(base_document):
     """The fabricated id must be warmed as well: it comes back known-absent, and REJECT
     rule 1 then fires on an answer rather than on an exception."""
-    from conftest import FakeSourceReader
+    from b3_support import FakeSourceReader
 
     strict = FakeSourceReader(["s2:aaa", "s2:bbb"], strict=True)
     loop, _model, _kernel = build_loop(strict, [FABRICATING_PLAN] * 3)
@@ -470,7 +470,7 @@ async def test_a_fabricated_id_is_warmed_too_so_the_reject_rests_on_a_real_answe
 @pytest.mark.asyncio
 async def test_commit_warms_before_re_judging(sources, base_document):
     """The commit path reaches the kernel too, and re-judges against the current document."""
-    from conftest import FakeSourceReader
+    from b3_support import FakeSourceReader
 
     strict = FakeSourceReader(["s2:aaa", "s2:bbb", "openalex:W123"], strict=True)
     loop, _model, kernel = build_loop(strict, [SHORTEN_PLAN])

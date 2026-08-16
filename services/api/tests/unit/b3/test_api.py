@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import TEST_BAND, AlwaysRenders
-from fakes import (
+from b3_fakes import (
     BagOfWordsEmbedder,
     FakeFingerprintStore,
     InMemoryDocumentStore,
@@ -16,6 +15,7 @@ from fakes import (
     ScriptedTextModel,
     ScriptedVerifier,
 )
+from b3_support import TEST_BAND, AlwaysRenders
 from fastapi.testclient import TestClient
 
 from app.api.deps import Services
