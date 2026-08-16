@@ -1,6 +1,6 @@
 # answerthat — api, web, grobid, postgres, redis.
 #
-#   cp .env.example .env    # fill in both keys first; the api will not start without them
+#   cp .env.example .env    # fill in all three keys first; the api will not start without them
 #   docker compose up
 #
 # Two things worth knowing before the first run:
@@ -19,19 +19,27 @@ services:
     build:
       context: ./services/api
     environment:
-      # No defaults for these two. An unset key must abort startup, and a compose-level
+      # No defaults for these three. An unset key must abort startup, and a compose-level
       # default would quietly supply the empty string that HR-2 exists to reject.
       SEMANTIC_SCHOLAR_API_KEY: ${SEMANTIC_SCHOLAR_API_KEY}
       OPENALEX_API_KEY: ${OPENALEX_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENALEX_MAILTO: ${OPENALEX_MAILTO}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GROBID_URL: http://grobid:8070
       DATABASE_URL: postgresql+asyncpg://answerthat:answerthat@postgres:5432/answerthat
       REDIS_URL: redis://redis:6379/0
       CSL_STYLES_DIR: /srv/csl-styles
+      UPLOAD_DIR: /data/uploads
+      # live | record | replay. CI runs replay, where a cache miss raises rather than
+      # reaching the network (ADR-018).
+      LLM_MODE: ${LLM_MODE:-live}
     volumes:
       - ./services/api/app:/srv/api/app
       - ./packages/csl-styles:/srv/csl-styles:ro
+      # ADR-022: uploaded PDFs live on a volume at /data/uploads/{doc_id}.pdf, with the
+      # path recorded in Postgres. Named rather than bind-mounted so an upload survives
+      # a container rebuild but does not litter the working tree.
+      - uploads:/data/uploads
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -120,3 +128,4 @@ services:
 
 volumes:
   postgres-data:
+  uploads:
