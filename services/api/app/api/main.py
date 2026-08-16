@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from app.agent.store import ChangeSetNotFound
 from app.agent.versioning import ApprovalError, VersionConflict
 from app.api.deps import DependencyUnavailable, Services, build_services
-from app.api.routes import documents, edits, review
+from app.api.routes import documents, edits, jobs, review
 from app.api.schemas import VersionConflictDetail
 from app.core.contracts import KernelRejection, MissingAPIKeyError, ParseFailure
 from app.core.errors import IRVersionConflict
@@ -42,6 +42,7 @@ def create_app(services: Services | None = None) -> FastAPI:
     app.include_router(documents.router)
     app.include_router(review.router)
     app.include_router(edits.router)
+    app.include_router(jobs.router)
 
     @app.get("/api/health", tags=["meta"])
     async def health() -> dict:
@@ -50,7 +51,7 @@ def create_app(services: Services | None = None) -> FastAPI:
             for name in (
                 "documents", "sources", "render_probe", "exporter", "retrieval",
                 "verifier", "claims", "review", "ingest", "style",
-                "embedder", "text_model", "structured_model", "fingerprints",
+                "embedder", "text_model", "structured_model", "fingerprints", "jobs",
             )
         }
         missing = sorted(name for name, ok in bound.items() if not ok)

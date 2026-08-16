@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
+from app.api.adapters import maybe_await
 from app.api.deps import Services
 from app.api.schemas import (
     JobAccepted,
@@ -66,7 +67,15 @@ async def upload(request: Request, file: UploadFile) -> JobAccepted:
         )
 
     doc_id = f"doc-{uuid.uuid4().hex[:12]}"
-    job_id = await ingest.enqueue(doc_id=doc_id, filename=file.filename, payload=payload)
+    job_id = await maybe_await(
+        ingest.enqueue(
+            doc_id=doc_id, filename=file.filename or f"{doc_id}.pdf", payload=payload
+        )
+    )
+    # Recorded before anything can go wrong with it. A job that exists only inside a
+    # worker's memory cannot be reported as failed once that worker is gone (ADR-022).
+    if svc.jobs is not None:
+        await svc.jobs.create(job_id=job_id, kind="ingest", doc_id=doc_id)
 
     return JobAccepted(
         job_id=job_id,
@@ -80,7 +89,7 @@ async def parse_status(request: Request, doc_id: str) -> ParseStatus:
     """A failed parse reports `failed` with its reason. It never reports `complete` with an
     empty document (HR-3)."""
     svc = services(request)
-    status = await svc.require("ingest").status(doc_id)
+    status = await maybe_await(svc.require("ingest").status(doc_id))
     if status is None:
         raise HTTPException(status_code=404, detail=f"no ingest job for document {doc_id!r}")
     return ParseStatus.model_validate(status)
@@ -101,11 +110,11 @@ async def parse_view(request: Request, doc_id: str, version: int | None = None) 
     """
     svc = services(request)
     document = await load_document(svc, doc_id, version)
-    report = await svc.require("ingest").parse_report(doc_id)
+    report = await maybe_await(svc.require("ingest").parse_report(doc_id))
 
     style = None
     if svc.style is not None:
-        style = await svc.style.detect(doc_id)
+        style = await maybe_await(svc.style.detect(doc_id))
 
     return {
         "document": document.model_dump(mode="json"),
@@ -145,7 +154,7 @@ async def get_style(request: Request, doc_id: str) -> StyleResponse:
     """Round-trip style detection (ADR-011). `ambiguous` means the top two scored within
     0.05 and the user must choose — we do not guess and present it as a finding."""
     svc = services(request)
-    result = await svc.require("style").detect(doc_id)
+    result = await maybe_await(svc.require("style").detect(doc_id))
     if result is None:
         raise HTTPException(status_code=404, detail=f"no style result for document {doc_id!r}")
     return StyleResponse.model_validate(result)
@@ -154,7 +163,7 @@ async def get_style(request: Request, doc_id: str) -> StyleResponse:
 @router.put("/{doc_id}/style", response_model=StyleResponse)
 async def set_style(request: Request, doc_id: str, payload: StyleSelection) -> StyleResponse:
     svc = services(request)
-    result = await svc.require("style").select(doc_id, payload.style_id)
+    result = await maybe_await(svc.require("style").select(doc_id, payload.style_id))
     return StyleResponse.model_validate(result)
 
 

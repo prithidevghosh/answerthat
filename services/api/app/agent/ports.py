@@ -8,7 +8,7 @@ Request in `memory.md` §5.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from app.core.contracts import (
     AbstractSource,
@@ -83,9 +83,17 @@ class ClaimExtractor(Protocol):
 
 @runtime_checkable
 class ReviewRunner(Protocol):
-    """B2's streaming review generator (ADR-014). Yields `(event_name, payload)`."""
+    """B2's review job runner and streaming generator (ADR-014).
 
-    def stream(self, doc_id: str, *, section_ids: list[str] | None = None): ...
+    `start` and `status` are typed loosely because B2 implements them synchronously —
+    the work is launched with `asyncio.create_task` rather than handed to arq — while
+    B3's routes are async. `app.api.adapters.maybe_await` bridges that at the call site
+    rather than either side guessing about the other.
+    """
+
+    def start(self, doc_id: str, section_ids: list[str] | None = None) -> Any: ...
+    def status(self, doc_id: str) -> Any: ...
+    def stream(self, doc_id: str, *, section_ids: list[str] | None = None) -> Any: ...
 
 
 # --------------------------------------------------------------------------- B2 · sources
@@ -109,7 +117,7 @@ class SourceReader(Protocol):
     def has(self, source_id: str) -> bool: ...
 
 
-# --------------------------------------------------------------------------- model ports
+# --------------------------------------------------------------------------- B1 · fingerprints
 
 
 @runtime_checkable

@@ -42,6 +42,7 @@ from app.agent.ports import (
 from app.agent.store import ChangeSetStore
 from app.agent.thresholds import ReattachmentBand
 from app.agent.versioning import VersionService
+from app.api.jobstore import JobStore
 
 log = logging.getLogger("app.api.deps")
 
@@ -78,7 +79,7 @@ class Services:
     text_model: TextModel | None = None
     structured_model: StructuredModel | None = None
     fingerprints: FingerprintStore | None = None
-    jobs: Any = None
+    jobs: JobStore | None = None
     change_sets: ChangeSetStore | None = None
     band: ReattachmentBand | None = None
     """`REATTACH_ACCEPT` / `REATTACH_FLAG_FLOOR`, read from config at boot (ADR-024). No
@@ -174,6 +175,7 @@ def build_services() -> Services:
     _bind_sources(services, settings)
     _bind_documents(services, settings)
     _bind_fingerprints(services, settings)
+    _bind_jobs(services, settings)
     _bind_export(services, settings)
 
     _bind(services, "ingest", "app.parsing.pipeline", ("get_ingest_pipeline",), settings)
@@ -231,6 +233,15 @@ def _bind_fingerprints(services: Services, settings: Any) -> None:
         model=settings.embedding_model,
         dimensions=settings.embedding_dimensions,
     )
+
+
+def _bind_jobs(services: Services, settings: Any) -> None:
+    """`agent_jobs` (ADR-020, ADR-022). B3's own table, so this is a hard requirement —
+    an unbound job store means a dead worker has nowhere to be reported."""
+    from app.api.jobstore import PostgresJobStore  # noqa: PLC0415
+    from app.core.db import session_scope  # noqa: PLC0415
+
+    services.jobs = PostgresJobStore(session_scope)
 
 
 def _bind_export(services: Services, settings: Any) -> None:

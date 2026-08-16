@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
+from app.api.adapters import maybe_await
 from app.api.deps import Services
 from app.api.schemas import JobAccepted, ReviewRequest
 
@@ -39,7 +40,13 @@ async def start_review(request: Request, doc_id: str, payload: ReviewRequest | N
     runner = svc.require("review")
     section_ids = payload.section_ids if payload else None
 
-    job_id = await runner.start(doc_id=doc_id, section_ids=section_ids)
+    job_id = await maybe_await(runner.start(doc_id=doc_id, section_ids=section_ids))
+    # Recorded here so that a worker which dies mid-review has a row to be reported
+    # failed against. Without one, the UI streams nothing forever and the user reads it
+    # as "no findings" — the same false negative as ADR-010 (ADR-022, HR-3).
+    if svc.jobs is not None and await svc.jobs.get(job_id) is None:
+        await svc.jobs.create(job_id=job_id, kind="review", doc_id=doc_id)
+
     return JobAccepted(
         job_id=job_id,
         doc_id=doc_id,
@@ -51,7 +58,7 @@ async def start_review(request: Request, doc_id: str, payload: ReviewRequest | N
 @router.get("/{doc_id}/review/status")
 async def review_status(request: Request, doc_id: str) -> dict:
     svc = services(request)
-    status = await svc.require("review").status(doc_id)
+    status = await maybe_await(svc.require("review").status(doc_id))
     if status is None:
         raise HTTPException(status_code=404, detail=f"no review job for document {doc_id!r}")
     return status

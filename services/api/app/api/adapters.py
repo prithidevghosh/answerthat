@@ -10,6 +10,7 @@ These adapters are the only place in B3's code that knows another package's shap
 
 from __future__ import annotations
 
+import inspect
 import logging
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,20 @@ from typing import Any
 from app.core.contracts import Document
 
 log = logging.getLogger("app.api.adapters")
+
+
+async def maybe_await(value: Any) -> Any:
+    """Await `value` if it is awaitable, otherwise return it.
+
+    B1's ingest pipeline and B2's review runner start their background work with
+    `asyncio.create_task` and so expose `enqueue`/`start`/`status` as *synchronous*
+    methods, while B3's ports declare them async. Rather than guess which side is right
+    and break at runtime on the wrong guess, the routes accept either.
+
+    This is an interop shim, not error handling: nothing is swallowed here and no default
+    is substituted. When both sides settle on one shape, delete it.
+    """
+    return await value if inspect.isawaitable(value) else value
 
 
 class DocumentStoreAdapter:
@@ -210,4 +225,5 @@ __all__ = [
     "PandocRenderProbe",
     "SourceReaderAdapter",
     "csl_lookup_for",
+    "maybe_await",
 ]
