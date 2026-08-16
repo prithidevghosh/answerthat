@@ -1,11 +1,13 @@
 packages:
   - .
 
-# pnpm 11 reads build approvals from here (no longer from package.json).
+# pnpm 11 reads build approvals from here (no longer from package.json), and
+# the key is `allowBuilds` — `onlyBuiltDependencies` is the pnpm 10 spelling and
+# is silently ignored, which makes install exit non-zero with
+# ERR_PNPM_IGNORED_BUILDS on a clean tree (the Docker image, CI) even though a
+# warm local node_modules installs fine.
 # sharp is unused — next.config.ts sets images.unoptimized — and unrs-resolver
-# backs eslint's import resolver. Both ship native postinstall builds;
-# approving them explicitly keeps `pnpm install` from exiting non-zero, which
-# otherwise fails the dependency check that `pnpm dev` runs before starting.
-onlyBuiltDependencies:
-  - sharp
-  - unrs-resolver
+# backs eslint's import resolver. Both ship native postinstall builds.
+allowBuilds:
+  sharp: true
+  unrs-resolver: true

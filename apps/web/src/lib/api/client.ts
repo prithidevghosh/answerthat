@@ -49,8 +49,49 @@ export interface ApiClient {
   exportUrl(docId: string): string;
 }
 
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, '') ?? 'http://localhost:8000';
+const stripTrailingSlash = (u: string) => u.replace(/\/$/, '');
+
+/**
+ * Every route the API serves is mounted under /api. Keeping the prefix here,
+ * rather than repeating it at ~15 call sites, is what stops the two halves
+ * drifting apart again.
+ */
+const API_PREFIX = '/api';
+
+/**
+ * Two origins, because the two runtimes reach the same API by different names.
+ *
+ * The *browser* must keep talking to the published host port directly —
+ * proxying the SSE stream through a Next route handler buffers it and makes
+ * findings arrive in a clump (memory.md §3, defeating ADR-014).
+ *
+ * But Server Components run inside the web container, where that host origin
+ * resolves to the container's own loopback and nothing is listening. There the
+ * API is the compose service `api`. A single shared constant cannot be correct
+ * for both, and using the browser's origin on the server is precisely what made
+ * a healthy API report itself unreachable.
+ */
+const PUBLIC_ORIGIN = stripTrailingSlash(
+  process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000',
+);
+
+// Not NEXT_PUBLIC_: this is server-only, and inlining an internal hostname into
+// the client bundle would be both useless and misleading. It reads as undefined
+// in the browser bundle, which is fine — apiBase() only consults it on the
+// server. The fallback keeps `next dev` on the host working with no config.
+const INTERNAL_ORIGIN = stripTrailingSlash(process.env.API_INTERNAL_URL ?? PUBLIC_ORIGIN);
+
+/**
+ * Browser-facing base. Use this only for URLs the *browser itself* will load:
+ * EventSource, XHR uploads, and download links. It is stable across runtimes so
+ * that a URL built during SSR still resolves once it reaches the page.
+ */
+export const API_BASE = `${PUBLIC_ORIGIN}${API_PREFIX}`;
+
+/** Base for a fetch issued by whichever runtime is executing right now. */
+export function apiBase(): string {
+  return typeof window === 'undefined' ? `${INTERNAL_ORIGIN}${API_PREFIX}` : API_BASE;
+}
 
 /**
  * Fixtures are opt-in and never the default: if this flag is unset and the API

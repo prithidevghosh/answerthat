@@ -1,4 +1,4 @@
-import { API_BASE, type ApiClient } from './client';
+import { API_BASE, apiBase, type ApiClient } from './client';
 import type {
   AnchorResolution,
   ApiStatus,
@@ -24,7 +24,9 @@ class ApiError extends Error {
 }
 
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  // apiBase(), not API_BASE: these run from Server Components as well as the
+  // browser, and the two runtimes reach the API by different hostnames.
+  const res = await fetch(`${apiBase()}${path}`, {
     ...init,
     headers: { Accept: 'application/json', ...(init?.headers ?? {}) },
   });
@@ -42,7 +44,7 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function text(path: string): Promise<string> {
-  const res = await fetch(`${API_BASE}${path}`);
+  const res = await fetch(`${apiBase()}${path}`);
   if (!res.ok) throw new ApiError(`GET ${path} failed`, res.status);
   return res.text();
 }
@@ -55,7 +57,7 @@ async function text(path: string): Promise<string> {
  */
 async function getStatus(): Promise<ApiStatus> {
   try {
-    const res = await fetch(`${API_BASE}/health`, { cache: 'no-store' });
+    const res = await fetch(`${apiBase()}/health`, { cache: 'no-store' });
     if (res.ok) {
       const body = (await res.json()) as { missing_keys?: string[] };
       const missing = body.missing_keys ?? [];

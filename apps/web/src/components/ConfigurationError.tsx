@@ -2,6 +2,7 @@ import { Plate } from './Plate';
 import { RuleWithFleuron } from './Ornament';
 import { Seal } from './Seal';
 import type { ApiStatus } from '@/lib/api/types';
+import { API_BASE } from '@/lib/api/client';
 
 const KEY_HELP: Record<string, { what: string; where: string; url: string }> = {
   SEMANTIC_SCHOLAR_API_KEY: {
@@ -60,9 +61,7 @@ export function ConfigurationError({ status }: { status: ApiStatus }) {
             {unreachable ? (
               <>
                 Nothing is wrong with your document. The web app is running, but the API at{' '}
-                <code className="text-xs text-primary">
-                  {process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000'}
-                </code>{' '}
+                <code className="text-xs text-primary">{API_BASE}</code>{' '}
                 did not answer. The most common cause is that it refused to start because a required
                 key is missing — which is intended behaviour, not a bug.
               </>
