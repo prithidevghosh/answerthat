@@ -131,6 +131,30 @@ const isSourceRecord = (v: JsonValue | undefined): boolean =>
   isObject(v) && isString(v.source_id) && isObject(v.csl);
 
 /**
+ * A section's blocks → its prose, in IR order.
+ *
+ * Paragraphs only: a figure or a table is a placeholder (ADR-008) with a
+ * caption and no content, and splicing captions into the running text would
+ * put words in the paper that the paper does not have. `null` when there is
+ * nothing readable, which is a different answer from an empty string.
+ */
+function joinSpans(blocks: JsonValue | undefined): string | null {
+  if (!isArray(blocks)) return null;
+  const paragraphs = blocks
+    .filter(isObject)
+    .filter((b) => b.type === 'paragraph')
+    .map((b) =>
+      (isArray(b.spans) ? b.spans : [])
+        .filter(isObject)
+        .map((s) => (isString(s.text) ? s.text : ''))
+        .join(' ')
+        .trim(),
+    )
+    .filter((p) => p !== '');
+  return paragraphs.length > 0 ? paragraphs.join('\n\n') : null;
+}
+
+/**
  * Tool name → card, with the payload checked against what that card needs.
  *
  * Tools absent from this switch are not a defect: `start_review` returns a job
@@ -260,33 +284,45 @@ export function readToolPayload(name: string, data: JsonObject | null): ToolPayl
         ? { card: 'source', data: { source: data.source as unknown as SourceRecord } }
         : { card: 'none' };
 
-    case 'search_evidence':
+    case 'search_evidence': {
+      // The tool serves `{hits, index}`; `{results, index_status}` is the name
+      // this file was first written against. Both are read rather than one
+      // being declared correct — the shape is the API's to choose, and a
+      // silently empty evidence card is exactly the "returned fewer hits and
+      // said nothing" failure the index status exists to prevent.
+      const hits = isArray(data.hits) ? data.hits : data.results;
+      const status = isObject(data.index) ? optString(data.index.state) : optString(data.index_status);
       return everyObject(
-        data.results,
+        hits,
         (r) => isString(r.kind) && isString(r.ref_id) && isString(r.text) && isNumber(r.score),
       )
         ? {
             card: 'evidence',
-            data: {
-              results: data.results as unknown as EvidenceHit[],
-              index_status: optString(data.index_status),
-            },
+            data: { results: hits as unknown as EvidenceHit[], index_status: status },
           }
         : { card: 'none' };
+    }
 
     case 'read_section':
-    case 'get_span':
-      return isString(data.text)
-        ? {
+    case 'get_span': {
+      // `get_span` carries `text`; `read_section` carries the section's blocks,
+      // because a section *is* its blocks and the tool will not flatten the IR
+      // on the model's behalf. Joining the spans here is the same text in the
+      // same order — no paraphrase, nothing dropped — which is what lets the
+      // agent quote the paper instead of recalling it.
+      const text = isString(data.text) ? data.text : joinSpans(data.blocks);
+      return text === null
+        ? { card: 'none' }
+        : {
             card: 'section_text',
             data: {
               section_id: optString(data.section_id) ?? optString(data.span_id) ?? '',
               title: optString(data.title),
-              text: data.text,
+              text,
               is_draft: optBool(data.is_draft),
             },
-          }
-        : { card: 'none' };
+          };
+    }
 
     case 'propose_edit':
       return isChangeSet(data)

@@ -166,24 +166,85 @@ class ConversationWatcher:
 
     # ------------------------------------------------------------------ review
 
+    async def _wait_for_review(self, doc_id: str, *, not_job: str | None) -> str:
+        """Block until a review job exists for this document, and return its id.
+
+        `not_job` is the job already watched to completion. A user who asks for a second
+        review gets a new `job_id`, and waiting for *a different* one is what lets this
+        watcher follow the new job without re-announcing the old one — `stream()` replays
+        a finished job's whole log, terminal event included, so re-subscribing to the same
+        job would tell the user their review had finished a second time.
+
+        The watcher is started when the conversation is opened, and at that moment there
+        is almost never a review — the user has to be told the plan and agree to it first,
+        which takes at least two turns. `ReviewJobRunner.stream` raises for a document
+        whose review was never started (deliberately: an empty stream is indistinguishable
+        from a review that found nothing), so a watcher that subscribed immediately died
+        on the spot and every finding the review later produced went unforwarded.
+
+        Waiting is the fix, rather than re-spawning the watcher from the `start_review`
+        tool. The tool would have to reach the watcher, the watcher reaches the
+        orchestrator, and the orchestrator owns the tools — a cycle, to make correctness
+        depend on the order two things happened in. A bridge that waits for the work to
+        appear has no ordering to get wrong.
+
+        The poll is a dictionary lookup in the same process, not I/O.
+        """
+        from app.api.adapters import maybe_await  # noqa: PLC0415
+
+        while True:
+            status = await maybe_await(self._review.status(doc_id)) or {}
+            job_id = status.get("job_id") or ""
+            if status.get("status", "not_started") != "not_started" and job_id != not_job:
+                return job_id
+            await asyncio.sleep(self._settings.orchestrator_watch_interval_s)
+
     async def _watch_review(self, conversation: Conversation) -> None:
+        """Follow this document's reviews for as long as the conversation lives.
+
+        A loop rather than a single pass, because a review is not a once-per-document
+        event: the user may ask for a second one over a narrower scope, or re-run a
+        completed one, and each deserves the same progress and the same completion notice.
+        """
+        watched: str | None = None
+        try:
+            while True:
+                watched = await self._watch_one_review(conversation, not_job=watched)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — logged with its traceback, never silent
+            log.exception("review watcher failed for conversation %s", conversation.conversation_id)
+
+    async def _watch_one_review(self, conversation: Conversation, *, not_job: str | None) -> str:
         doc_id = conversation.doc_id
         store = self._orchestrator.conversations
         findings: list[dict] = []
 
+        job_id = await self._wait_for_review(doc_id, not_job=not_job)
         try:
             async for name, payload in self._review.stream(doc_id):
                 if name == "heartbeat":
                     continue
                 if name == "finding":
                     findings.append(payload)
+                    # Nested, not splatted. A `Finding` has its own `kind` field
+                    # (`missing_work`, `claim_citation_mismatch`), and splatting it over
+                    # the envelope overwrote the `parse`/`review` discriminator the
+                    # frontend switches on — twenty-four finding events arrived labelled
+                    # `kind: "missing_work"` and were invisible to a client filtering for
+                    # review progress. Nesting makes the collision impossible rather than
+                    # ordering the keys so that it happens not to occur.
                     await store.append_event(
-                        conversation, "progress", {"kind": "review", "event": "finding", **payload}
+                        conversation,
+                        "progress",
+                        {"kind": "review", "event": "finding", "finding": payload},
                     )
                     continue
                 if name == "progress":
                     await store.append_event(
-                        conversation, "progress", {"kind": "review", "event": "progress", **payload}
+                        conversation,
+                        "progress",
+                        {"kind": "review", "event": "progress", "stats": payload},
                     )
                     continue
                 if name == "complete":
@@ -205,7 +266,7 @@ class ConversationWatcher:
                             )
                         },
                     )
-                    return
+                    return job_id
                 if name == "error":
                     await self._orchestrator.notify(
                         conversation,
@@ -213,15 +274,13 @@ class ConversationWatcher:
                         doc_id=doc_id,
                         error=payload.get("message") or payload.get("detail") or "unknown",
                     )
-                    return
-        except asyncio.CancelledError:
-            raise
+                    return job_id
         except KeyError:
-            # No review was ever started for this document. Not an error: the watcher was
-            # optimistic, and there is nothing to report.
-            return
-        except Exception:  # noqa: BLE001 — logged with its traceback, never silent
-            log.exception("review watcher failed for conversation %s", conversation.conversation_id)
+            # The job vanished between the status check and the subscribe — only possible
+            # if the runner was reset underneath us. Nothing to report; the outer loop
+            # goes back to waiting.
+            return job_id
+        return job_id
 
     # ------------------------------------------------------------------ indexing
 

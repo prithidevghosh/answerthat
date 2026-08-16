@@ -62,7 +62,16 @@ export function Confirmation({
         {HEADING[confirmation.kind]}
       </h2>
 
-      <div className="mt-5 max-h-[46vh] overflow-y-auto pr-1">
+      {/*
+        The proposal is the one part of the dock allowed to be tall, so it is
+        the one part that scrolls — and it scrolls *inside* the confirmation,
+        with the heading above it and the Yes/No below it both outside the
+        scroll area. A change set with four diffs would otherwise push the
+        buttons and the composer off the bottom of the screen, and a
+        confirmation whose buttons you have to hunt for is a confirmation people
+        click blind.
+      */}
+      <div className="mt-5 max-h-[30vh] overflow-y-auto pr-1">
         <Proposal confirmation={confirmation} sources={sources} />
 
         {orphans.length > 0 && (

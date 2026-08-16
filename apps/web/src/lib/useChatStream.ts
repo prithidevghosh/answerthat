@@ -503,7 +503,14 @@ function reduce(prev: ChatState, event: ChatEvent): ChatState {
                   // shown in full, because a failed tool with no stated cause
                   // is the failure HR-3 exists to prevent.
                   error: ok ? null : (error ?? summary ?? 'The tool failed and gave no reason.'),
-                  payload: readToolPayload(c.name, event.data.data),
+                  // A failed tool gets no card, whatever is in `data`.
+                  // `get_document_outline` refusing with "the ingest is at
+                  // stage 'grobid', before the PDF has been turned into a
+                  // document" carries `data: {}` — and an outline card built
+                  // from that would be an empty document presented as the
+                  // paper. The reason is the answer, and the line above shows
+                  // it in full.
+                  payload: ok ? readToolPayload(c.name, event.data.data) : { card: 'none' },
                 }
               : c,
           ),

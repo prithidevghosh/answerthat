@@ -6,6 +6,7 @@ pieces: a background job's state over time, and a model's answer over the wire.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -133,9 +134,16 @@ async def test_a_failed_parse_reports_the_pipeline_s_own_reason(
 async def test_review_findings_stream_as_progress_and_completion_runs_a_turn(
     conversations, context, settings, ingest, documents, sources, review
 ) -> None:
+    # The watcher waits for a job to exist before subscribing, so the fake has to report
+    # one. That wait is the fix for a real defect: the watcher is started when the
+    # conversation opens, long before the user has agreed to a review, and subscribing
+    # immediately died on the runner's "no review was started" refusal.
+    review._status = {"status": "running", "job_id": "rev_1"}  # noqa: SLF001
     review.events = [
         ("progress", {"phase": "claims_extracted", "verified": 0, "total": 2}),
-        ("finding", {"finding_id": "fnd_1", "severity": "high",
+        # `kind` here is the real shape of a `Finding` payload, and it is the whole point
+        # of this fixture: it is the key that collided with the envelope's discriminator.
+        ("finding", {"finding_id": "fnd_1", "kind": "missing_work", "severity": "high",
                      "claim": {"claim_id": "clm_1", "text": "A claim."}}),
         ("complete", {"verified": 2, "total": 2, "findings": 1, "candidates_considered": 9,
                       "quote_check_failures": 4, "unverifiable_no_abstract": 1,
@@ -151,15 +159,58 @@ async def test_review_findings_stream_as_progress_and_completion_runs_a_turn(
     watcher.watch_review(conversation)
     await settle()
 
-    kinds = [e.payload for e in conversation.events if e.event == "progress"]
-    assert any(p.get("event") == "finding" for p in kinds)
-    assert all(p["kind"] == "review" for p in kinds)
+    forwarded = [e.payload for e in conversation.events if e.event == "progress"]
+    assert any(p.get("event") == "finding" for p in forwarded)
+    # Every one carries the `parse`/`review` discriminator the frontend switches on. This
+    # is the assertion that caught the real bug: a `Finding` has its own `kind` field, and
+    # splatting the payload over the envelope replaced "review" with "missing_work", so
+    # every finding event was invisible to a client filtering for review progress.
+    assert all(p["kind"] == "review" for p in forwarded)
+    finding = next(p for p in forwarded if p["event"] == "finding")
+    assert finding["finding"]["finding_id"] == "fnd_1"
+    assert finding["finding"]["kind"] == "missing_work", "the finding keeps its own kind, nested"
 
     notice = next(m for m in conversation.messages if m.role == "system_notice")
     # The secondary counters travel with the notice: a one-finding review that killed four
     # candidates on the quote check is a different report from one that found nothing to kill.
     assert "4 were discarded" in notice.content
     assert "1 had no retrievable abstract" in notice.content
+    assert len(model.calls) == 1
+
+
+async def test_the_watcher_waits_for_a_review_that_does_not_exist_yet(
+    conversations, context, settings, ingest, documents, sources, review
+) -> None:
+    """The ordering defect, pinned.
+
+    A review watcher is started when the conversation opens. At that moment there is
+    almost never a review — the user has to be told the plan and agree first, which takes
+    at least two turns. Subscribing immediately hit the runner's deliberate refusal for a
+    document whose review was never started, the watcher died, and every finding the
+    review later produced went unforwarded while the counters climbed. Found by running a
+    real review through the live stack; the watcher now waits for the job to appear.
+    """
+    review._status = {"status": "not_started"}  # noqa: SLF001
+    review.events = [("complete", {"verified": 1, "total": 1, "findings": 0})]
+    model = ScriptedModel([say("The review finished.")])
+    orchestrator = Orchestrator(
+        model=model, conversations=conversations, tool_context=context, settings=settings
+    )
+    conversation, _ = await conversations.start("doc-1")
+    watcher = _watcher(orchestrator, ingest, review, documents, sources, FakeIndex(), settings)
+
+    watcher.watch_review(conversation)
+    await settle()
+    assert model.calls == [], "nothing to report until a review exists"
+
+    # The review starts, three turns later, exactly as it does in the product.
+    review._status = {"status": "running", "job_id": "rev_1"}  # noqa: SLF001
+    # A real sleep, not just event-loop yields: the watcher's wait is a timed poll, so
+    # letting it notice requires the clock to move past one interval.
+    await asyncio.sleep(settings.orchestrator_watch_interval_s * 3)
+    await settle()
+
+    assert len([m for m in conversation.messages if m.role == "system_notice"]) == 1
     assert len(model.calls) == 1
 
 

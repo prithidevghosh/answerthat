@@ -93,6 +93,7 @@ export function ChatConsole({
   );
 
   const plate = plateFor(chat);
+  const endRef = useAutoScroll(chat);
 
   return (
     <>
@@ -146,6 +147,9 @@ export function ChatConsole({
               )}
 
               <StreamNotice chat={chat} />
+
+              {/* The foot of the transcript, and what `useAutoScroll` follows. */}
+              <div ref={endRef} aria-hidden="true" className="h-px" />
             </>
           )}
         </main>
@@ -156,6 +160,17 @@ export function ChatConsole({
           smears the rules beneath it and reads as a rendering fault.
         */}
         {conversation && !chat.fatal && (
+          /*
+            The dock itself does not scroll, and must not.
+
+            It carries a lot at once — a live parse card, a live review card, a
+            change set with its diffs, and the composer — so capping its height
+            and letting the whole thing scroll looks like the fix. It is not:
+            the composer is the last child, so it scrolls out of the dock's own
+            viewport and the user is left with a panel and nowhere to type. The
+            variable part is bounded instead (see `Confirmation`), and the
+            composer stays pinned below it at every height.
+          */
           <div className="sticky bottom-0 z-20 border-t border-hair bg-paper">
             <div className="content-column py-5">
               <div className="max-w-[860px]">
@@ -196,6 +211,56 @@ export function ChatConsole({
 }
 
 type Chat = ReturnType<typeof useChatStream>;
+
+/** How close to the foot still counts as "following along". */
+const FOLLOW_SLACK_PX = 160;
+
+/**
+ * Keep the newest turn in view — but only while the reader is already there.
+ *
+ * A transcript that loads at the top puts the oldest message on screen and the
+ * newest one behind the composer dock, which on a long conversation means the
+ * answer you just asked for is the one thing you cannot see. So it follows.
+ *
+ * It stops following the moment the reader scrolls up, because the other
+ * failure is worse: yanking someone back to the foot while they are reading a
+ * diff halfway up, every time a progress tick arrives, makes the screen
+ * unusable during exactly the long-running work this flow exists for.
+ *
+ * `prefers-reduced-motion` gets an instant jump rather than a smooth one — §6
+ * says no exceptions, and a smooth scroll is motion.
+ */
+function useAutoScroll(chat: Chat) {
+  const endRef = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+
+  useEffect(() => {
+    const onScroll = () => {
+      const fromBottom =
+        document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
+      following.current = fromBottom <= FOLLOW_SLACK_PX;
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // The streamed text is part of the key: a message growing by deltas has to
+  // keep the foot in view, not just a new message arriving.
+  const tail = chat.transcript[chat.transcript.length - 1];
+  const signal = `${chat.transcript.length}:${
+    tail?.kind === 'turn' ? tail.turn.content.length : 0
+  }:${chat.pending ? 1 : 0}`;
+
+  useEffect(() => {
+    if (!following.current) return;
+    endRef.current?.scrollIntoView({
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      block: 'end',
+    });
+  }, [signal]);
+
+  return endRef;
+}
 
 /** The plate follows the work: I parse, II review, III edit, IV export. */
 function plateFor(chat: Chat): PlateNumber {
