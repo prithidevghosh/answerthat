@@ -190,15 +190,49 @@ def test_changing_an_identity_field_is_still_refused() -> None:
     assert "identity" in str(exc.value)
 
 
-def test_two_providers_disagreeing_on_an_abstract_still_raises() -> None:
-    """Also untouched by ADR-028, and for a specific reason: a finding's quote has very
-    likely been substring-checked against the stored abstract already."""
+def test_a_stored_abstract_is_never_replaced_by_a_rival_one() -> None:
+    """The guarantee ADR-028 protects, kept: a finding's quote has very likely been
+    substring-checked against the stored abstract already, so it stays canonical."""
     existing = _stored(abstract="Original abstract text.", abstract_source=AbstractSource.S2)
     incoming = _stored(
         abstract="A different abstract text.", abstract_source=AbstractSource.OPENALEX_INVERTED
     )
-    with pytest.raises(AppendOnlyViolation):
-        _merge_append_only(existing, incoming)
+
+    result = _merge_append_only(existing, incoming)
+
+    assert result.record is not None
+    assert result.record.abstract == "Original abstract text."
+    assert result.record.abstract_source is AbstractSource.S2
+
+
+def test_a_rival_abstract_is_recorded_rather_than_raised() -> None:
+    """The production crash this replaced.
+
+    S2 answers with its one-line TLDR and stores it, the chain carries on to step 2, and
+    OpenAlex's full inverted abstract arrives — which ADR-006 ranks *above* a TLDR. That
+    is the fallback chain working, and it raised `AppendOnlyViolation`, which nothing
+    catches, so every such reference killed the review at the `review` state.
+    """
+    existing = _stored(abstract="A short summary.", abstract_source=AbstractSource.TLDR)
+    incoming = _stored(
+        abstract="We propose a new architecture based solely on attention.",
+        abstract_source=AbstractSource.OPENALEX_INVERTED,
+    )
+
+    result = _merge_append_only(existing, incoming)
+
+    assert not result.is_noop
+    assert result.record is not None
+    # Canonical stays put; the better reading is kept beside it, with its provenance, and
+    # `AbstractResolver` re-ranks live on every resolve.
+    assert result.record.abstract == "A short summary."
+    assert [d["field"] for d in result.disagreements] == ["abstract"]
+    offered = result.disagreements[0]
+    assert offered["offered"] == "We propose a new architecture based solely on attention."
+    assert offered["stored_source"] == "tldr"
+    assert offered["offered_source"] == "openalex_inverted"
+    assert offered["offered_by"] == incoming.provenance.provider
+    assert offered["external_url"].startswith("https://")
 
 
 def test_provider_namespaced_facts_merge_instead_of_colliding() -> None:

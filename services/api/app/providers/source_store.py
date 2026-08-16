@@ -16,8 +16,9 @@ rather than by a comment:
 3. **URL check.** `external_url` must be absolute http(s) with a host. A finding a reader
    cannot open is indistinguishable from a fabricated one.
 4. **Append-only check.** No row is ever updated or deleted; an existing `source_id`
-   only ever gains versions. A change to an identity field (`DOI`) or a replacement of
-   an abstract we already hold is refused outright.
+   only ever gains versions. A change to an identity field (`DOI`) is refused outright,
+   and an abstract we already hold is never replaced — a differing one is recorded
+   beside it rather than over it.
 
 Checks 1-3 are absolute. Check 4 has a scope, set by **ADR-028**: same DOI means the same
 work, so a second provider describing that work is *additional information*, not an attempt
@@ -187,9 +188,19 @@ def _merge_append_only(existing: SourceRecord, incoming: SourceRecord) -> MergeR
     promoting a later reading would move ground the verifier already stood on — and
     choosing between readings is the arbiter's job, not the store's.
 
-    Still fatal, and deliberately so: a change to an identity field, and the replacement
-    of an abstract we already hold from a real response. Those are the part of HR-1 that
-    makes fabrication structurally impossible.
+    Still fatal, and deliberately so: a change to an identity field. That is the part of
+    HR-1 that makes fabrication structurally impossible.
+
+    An abstract we already hold is still never *replaced* — that guarantee is what ADR-028
+    protects and it is untouched here. What is no longer fatal is a second provider
+    offering a different one, because that is the fallback chain running in its documented
+    order, not an attempt to corrupt the first. ADR-006 ranks S2 → OpenAlex inverted →
+    TLDR, so a record stored with an S2 TLDR and later enriched with OpenAlex's full
+    inverted abstract is the *normal* path, and raising there killed the review. The rival
+    reading is recorded beside the canonical one, exactly like a descriptive field.
+    `AbstractResolver` remains the thing that chooses which abstract is used, and it
+    re-ranks live on every resolve — the store must not decide that question a second
+    time (ADR-028's whole argument against a store-side veto).
     """
     merged_csl, differing = _merge_dicts(existing.csl or {}, incoming.csl or {})
 
@@ -207,18 +218,27 @@ def _merge_append_only(existing: SourceRecord, incoming: SourceRecord) -> MergeR
     incoming_has_abstract = bool(incoming.abstract) and (
         incoming.abstract_source not in _ABSENT_ABSTRACT_SOURCES
     )
+    abstract_disagreement: dict[str, Any] | None = None
     if incoming_has_abstract and not existing_has_abstract:
         abstract = incoming.abstract
         abstract_source = incoming.abstract_source
     elif incoming_has_abstract and existing.abstract != incoming.abstract:
-        # Unlike a descriptive field, this one stays fatal. A quote has very likely
-        # already been substring-checked against the stored abstract, so treating a
-        # rival abstract as an alternative reading would leave a verified finding
-        # pointing at text no longer beneath it.
-        violations.append(
-            f"abstract from {existing.abstract_source.value} would be replaced by "
-            f"{incoming.abstract_source.value}"
-        )
+        # Two real abstracts for one work. The stored one stays canonical — a quote has
+        # very likely already been substring-checked against it, and promoting a later
+        # reading would move ground the verifier already stood on. But the alternative is
+        # kept rather than refused: it came from a real response, it is what ADR-006's
+        # chain may well prefer on the next resolve, and losing it is the one thing this
+        # store is not allowed to do.
+        abstract_disagreement = {
+            "field": "abstract",
+            "stored": existing.abstract,
+            "offered": incoming.abstract,
+            "stored_source": existing.abstract_source.value,
+            "offered_source": incoming.abstract_source.value,
+            "offered_by": incoming.provenance.provider,
+            "external_url": incoming.provenance.external_url,
+            "retrieved_at": incoming.provenance.retrieved_at,
+        }
 
     if violations:
         raise AppendOnlyViolation(
@@ -239,6 +259,8 @@ def _merge_append_only(existing: SourceRecord, incoming: SourceRecord) -> MergeR
         for key, stored, offered in differing
         if key not in _IDENTITY_CSL_FIELDS
     ]
+    if abstract_disagreement is not None:
+        disagreements.append(abstract_disagreement)
 
     nothing_added = merged_csl == existing.csl and abstract == existing.abstract
     if nothing_added and not disagreements:

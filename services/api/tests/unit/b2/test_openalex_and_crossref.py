@@ -15,9 +15,11 @@ from app.providers.abstracts import AbstractResolver
 from app.providers.crossref import CrossrefProvider
 from app.providers.openalex import MAX_OR_VALUES, OpenAlexProvider, invert_abstract
 from app.providers.ratelimit import CreditBudget, OpenAlexCost
+from app.providers.semantic_scholar import SemanticScholarProvider
 
 FAKE_KEY = "test-openalex-key"
 FAKE_MAILTO = "tests@answerthat.local"
+FAKE_S2_KEY = "test-s2-key"
 
 
 @pytest.fixture
@@ -338,6 +340,53 @@ async def test_tldr_is_used_only_when_openalex_has_nothing(oa, openalex_work) ->
     )
     assert result.source is AbstractSource.TLDR
     assert result.text == "A short summary."
+
+
+async def test_openalex_enriches_a_record_s2_stored_with_only_a_tldr(
+    oa, store, cache, fast_limiter, transport_for, openalex_work
+) -> None:
+    """The production crash, reproduced across both real adapters.
+
+    Every other test on this chain stubs both ends, so no test had ever put two real
+    abstracts into one store — which is how a 100%-reproducible `AppendOnlyViolation`
+    reached the `review` state. S2 has no licensed abstract, stores its TLDR, and the
+    chain carries on to step 2 exactly as ADR-006 says it should; OpenAlex's inverted
+    abstract then lands on a `source_id` that already holds one.
+    """
+    s2_paper = {
+        "paperId": "s2peerj4375",
+        "externalIds": {"DOI": "10.7717/peerj.4375"},
+        "url": "https://www.semanticscholar.org/paper/s2peerj4375",
+        "title": "The state of OA",
+        "abstract": None,
+        "year": 2018,
+        "authors": [{"authorId": "1", "name": "Heather Piwowar"}],
+        "publicationTypes": ["JournalArticle"],
+        "tldr": {"text": "Most OA articles turn out to be findable."},
+    }
+    s2 = SemanticScholarProvider(
+        api_key=FAKE_S2_KEY,
+        cache=cache,
+        store=store,
+        limiter=fast_limiter,
+        client=httpx.AsyncClient(
+            transport=transport_for({"/graph/v1/paper/search": {"data": [s2_paper]}})
+        ),
+    )
+    (record,) = await s2.search_works("open access")
+    assert record.abstract_source is AbstractSource.TLDR
+
+    provider, _ = oa({"/works": openalex_work})
+    text, source = await provider.get_abstract(record.source_id)
+
+    assert source is AbstractSource.OPENALEX_INVERTED
+    assert text.startswith("Despite growing interest")
+
+    # The store kept both: the TLDR canonical, OpenAlex's fuller reading recorded beside
+    # it with its own provenance. Nothing was replaced and nothing was lost.
+    history = await store.history(record.source_id)
+    assert len(history) == 2
+    assert history[-1].abstract == "Most OA articles turn out to be findable."
 
 
 async def test_the_chain_ends_in_a_real_unavailable(oa, openalex_work) -> None:
