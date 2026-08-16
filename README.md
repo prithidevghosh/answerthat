@@ -33,6 +33,13 @@ PDF ──► GROBID ──► Document IR ──► arbiter (Crossref / S2 / Op
    version under optimistic locking.
 6. **Export.** IR renders to LaTeX through Pandoc with the detected CSL style.
 
+There are two ways through those steps. The **deterministic** flow gives each one a screen and the
+user drives. The **conversational** flow (ADR-031…034) puts an agent above the same functions: it
+answers questions about the paper, describes what a review will actually do before running one,
+proposes edits, and commits only after the user has answered — with every orphaned citation anchor
+decided one at a time. Nothing about the guarantees changes between them; the kernel, the source
+store and the approval gate are the same code.
+
 ## The five rules the code is built around
 
 These are load-bearing, not aspirational. `goal.md` states them; `decision.md` carries the ADRs.
@@ -138,6 +145,8 @@ quietly hitting the network.
     │                             response cache, the only writers to source_store
     ├── review/                   claims → candidates → fusion → rerank → verify → stream
     ├── agent/                    planner, typed operations, invariant kernel, diff, versioning
+    ├── orchestrator/             the conversational flow: tool registry, agent loop,
+    │                             confirmation gate, conversations, evidence index
     ├── export/                   IR → Pandoc → LaTeX
     └── api/                      FastAPI routes, jobs, SSE
 ```
@@ -161,6 +170,9 @@ Everything is mounted under `/api`; interactive docs at `http://localhost:8000/d
 | `POST` | `/api/change-sets/{id}/approve` | Per-change approve/reject + orphan decisions, against a `base_version` |
 | `GET` | `/api/documents/{id}/export.tex` · `/export/manifest` | The revised LaTeX |
 | `GET` | `/api/sources/{id}` · `/api/jobs/{id}` · `/api/agent/metrics` | Source record, job state, `FreeformEdit` firing rate |
+| `POST` | `/api/documents/{id}/chat` | Create or return this document's conversation |
+| `GET`/`POST` | `/api/chat/{id}` · `/messages` · `/stop` | The transcript; send a message → `202`; cancel the in-flight turn |
+| `GET` | `/api/chat/{id}/stream` | SSE — replays the event log, then follows live |
 
 Connect the browser's `EventSource` **directly** to the FastAPI SSE endpoint — proxying it through a
 Next.js route buffers the stream and makes findings arrive in a clump.
@@ -192,8 +204,10 @@ Roughly in the order they would bother me if someone else were running this.
   repair tier behaves on a genuinely mangled reference string — are untested.
 - **Jobs run inside the API process.** `arq` and Redis are wired and record job status, but ingest
   and review actually run on `asyncio.create_task`. That means one process only, and a restart kills
-  in-flight work and takes the parse report with it — `/parse` then 404s for documents ingested
-  before the restart.
+  work that is still in flight. What a restart no longer destroys is *finished* work: parse reports
+  are persisted to `parse_reports` and conversations to the `chat_*` tables (ADR-032), so `/parse`
+  and the chat both survive one. A review's findings still live in the runner's memory and are gone
+  after a restart; re-running one is a second billed pass.
 - **Retrieval is one strategy short without a Semantic Scholar key.** S2 serves search and batch
   from a pool that is closed to anonymous callers, not merely slow (ADR-010b), so a review runs
   three candidate strategies instead of four and loses passage-level evidence. Findings are still
