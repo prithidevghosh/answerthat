@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -216,6 +217,86 @@ def test_export_downloads_the_tex(base_document, sources):
     assert "\\section{Introduction}" in response.text
 
 
+def test_the_export_manifest_route_exists_and_describes_the_download(base_document, sources):
+    """F1 has called `/export/manifest` since the export screen was written; the API never
+    served it, so every visit to that screen ended in "could not load the export" while
+    the openapi schema listed only `export.tex`."""
+    client, _services, _documents = build_client(base_document, sources)
+    doc_id = base_document.doc_id
+
+    response = client.get(f"/api/documents/{doc_id}/export/manifest")
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["doc_id"] == doc_id
+    assert body["version"] == base_document.version
+    # The name the manifest promises must be the name the download delivers.
+    download = client.get(f"/api/documents/{doc_id}/export.tex")
+    assert body["filename"] in download.headers["content-disposition"]
+    # Two distinct source_ids across the seeded anchors, counted off the IR.
+    assert body["bibliography_entries"] == 2
+    assert {p["type"] for p in body["placeholder_blocks"]} == {"figure", "table", "equation"}
+
+
+def test_a_document_with_no_style_reports_the_export_as_blocked(base_document, sources):
+    """HR-3. Style detection returns `ambiguous` rather than guessing (CP-3), so a paper
+    can sit at the export screen with no style — and the exporter then refuses. The
+    manifest has to say so *before* the click, or the refusal reaches the user as a
+    broken download instead of as the decision it is."""
+    base_document.metadata.style_id = None
+    client, _services, _documents = build_client(base_document, sources)
+
+    body = client.get(f"/api/documents/{base_document.doc_id}/export/manifest").json()
+    assert body["style_id"] is None
+    assert body["exportable"] is False
+    assert "citation style" in body["blocked_reason"]
+
+
+def test_an_export_refusal_is_a_409_with_the_reason_not_a_bare_500(base_document, sources):
+    """`ExportFailure` names a condition the exporter understands precisely. Uncaught, it
+    left the route as a 500 reading "Internal Server Error" with the reason only in the
+    container log — the generic 500 standing in for a known condition that HR-3 forbids."""
+    from app.core.errors import ExportFailure
+
+    class RefusingExporter:
+        async def to_latex(self, document) -> str:  # noqa: ANN001
+            raise ExportFailure("no citation style selected.")
+
+    client, services, _documents = build_client(base_document, sources)
+    services.exporter = RefusingExporter()
+
+    response = client.get(f"/api/documents/{base_document.doc_id}/export.tex")
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["error"] == "export_refused"
+    assert "no citation style selected." in body["detail"]
+
+
+def test_choosing_a_style_persists_it_onto_the_stored_document(base_document, sources):
+    """The choice has to land where the exporter reads.
+
+    B1's `select()` writes `metadata.style_id` on the in-process parse record only. The
+    exporter loads the head from the document store, where it stayed `None` — so a user
+    who picked a style still got "no citation style selected" from the download, and the
+    pick was lost outright on the next API restart.
+    """
+    base_document.metadata.style_id = None
+    client, _services, documents = build_client(base_document, sources)
+    doc_id = base_document.doc_id
+
+    assert client.put(f"/api/documents/{doc_id}/style", json={"style_id": "ieee"}).status_code == 200
+
+    # Read it back off the store the exporter uses, not off the style service's reply.
+    head = asyncio.run(documents.get(doc_id))
+    assert head.metadata.style_id == "ieee"
+    assert head.metadata.style_ambiguous is False
+
+    manifest = client.get(f"/api/documents/{doc_id}/export/manifest").json()
+    assert manifest["style_id"] == "ieee"
+    assert manifest["exportable"] is True
+    assert manifest["blocked_reason"] is None
+
+
 # ===========================================================================
 # The edit flow
 # ===========================================================================
@@ -380,6 +461,33 @@ def test_the_freeform_metric_is_exposed(base_document, sources):
 
 
 # ===========================================================================
+# Sources
+# ===========================================================================
+
+
+def test_a_source_record_is_readable_by_id(base_document, sources):
+    """Every screen that renders a citation reads it here. Nothing served this route, so
+    the parse inspector, the review feed and the edit console each fetched, got a 404 and
+    rendered a citation-shaped hole."""
+    client, _services, _documents = build_client(base_document, sources)
+
+    response = client.get("/api/sources/s2:aaa")
+    assert response.status_code == 200
+    assert response.json()["source_id"] == "s2:aaa"
+
+    # Warmed before it was read — an unwarmed id raises in B2's store rather than
+    # reporting absence, so skipping the warm turns "we never looked" into a 500.
+    assert "s2:aaa" in sources.warmed
+
+
+def test_an_unknown_source_is_a_404_not_an_empty_record(base_document, sources):
+    client, _services, _documents = build_client(base_document, sources)
+    response = client.get("/api/sources/s2:never-stored")
+    assert response.status_code == 404
+    assert "s2:never-stored" in response.json()["detail"]
+
+
+# ===========================================================================
 # SSE
 # ===========================================================================
 
@@ -427,6 +535,30 @@ def test_starting_a_review_returns_a_job_id_and_the_stream_url(base_document, so
     body = response.json()
     assert body["job_id"] == "job-review-1"
     assert body["stream"] == "/api/documents/doc-1/review/stream"
+
+
+def test_the_advertised_stream_url_is_one_this_app_actually_serves(base_document, sources):
+    """The 202 names its own stream URL — so *follow it* rather than asserting the string.
+
+    Hard-coding the expected path above proves the response body and proves nothing about
+    the router. The frontend composed `/api/reviews/{job_id}/stream` instead of following
+    this link: no router has ever served that shape, the identifier was a job id where the
+    runner keys by document, and every review 404'd — reported to the user as "the review
+    could not run". A test that asks the app to resolve its own advertisement is the one
+    that would have caught it.
+    """
+    events = [("progress", {"verified": 0, "total": 1}), ("complete", {"verified": 1, "total": 1})]
+    client, _services, _documents = build_client(base_document, sources, review=StubReview(events))
+
+    accepted = client.post(f"/api/documents/{base_document.doc_id}/review", json={}).json()
+    for link in (accepted["stream"], accepted["poll"]):
+        with client.stream("GET", link) as response:
+            assert response.status_code == 200, f"the API advertised {link}, which it does not serve"
+            body = "".join(response.iter_text())
+        assert body, f"{link} answered with nothing"
+
+    with client.stream("GET", accepted["stream"]) as response:
+        assert "event: complete" in "".join(response.iter_text())
 
 
 # ===========================================================================

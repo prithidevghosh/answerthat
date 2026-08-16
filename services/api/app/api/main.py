@@ -21,12 +21,12 @@ from fastapi.responses import JSONResponse
 from app.agent.store import ChangeSetNotFound
 from app.agent.versioning import ApprovalError, VersionConflict
 from app.api.deps import DependencyUnavailable, Services, build_services
-from app.api.routes import documents, edits, jobs, review
+from app.api.routes import documents, edits, jobs, review, sources
 from app.api.schemas import VersionConflictDetail
 from app.core.config import unauthenticated_providers
 from app.core.contracts import KernelRejection, MissingAPIKeyError, ParseFailure
 from app.core.db import create_all, dispose_engine
-from app.core.errors import IRVersionConflict
+from app.core.errors import ExportFailure, IRVersionConflict
 
 log = logging.getLogger("app.api")
 
@@ -52,6 +52,7 @@ def create_app(services: Services | None = None) -> FastAPI:
     app.include_router(review.router)
     app.include_router(edits.router)
     app.include_router(jobs.router)
+    app.include_router(sources.router)
 
     @app.get("/api/health", tags=["meta"])
     async def health() -> dict:
@@ -245,6 +246,22 @@ def _install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ParseFailure)
     async def _parse(_request: Request, exc: ParseFailure) -> JSONResponse:
         return JSONResponse(status_code=422, content={"error": "parse_failure", "detail": str(exc)})
+
+    @app.exception_handler(ExportFailure)
+    async def _export(_request: Request, exc: ExportFailure) -> JSONResponse:
+        """The exporter refuses on conditions it understands precisely — no style chosen,
+        a cited source with no CSL record — and says why in its message. Letting those
+        reach the client as a bare 500 turned a stated refusal into "something broke",
+        which is the same false negative HR-3 is written against. 409: the document is
+        fine, the request cannot be satisfied until something is decided."""
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "export_refused",
+                "detail": str(exc),
+                "hint": "Nothing was written. The reason above is the exporter's, verbatim.",
+            },
+        )
 
 
 app = None  # populated by `uvicorn app.api.main:asgi`

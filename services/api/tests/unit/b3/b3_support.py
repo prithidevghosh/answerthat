@@ -113,6 +113,29 @@ class NeverRenders:
         return False, self.reason
 
 
+class RendersByResolvingEveryCitation:
+    """What `PandocRenderProbe` actually does: build a bibliography for the whole document.
+
+    `AlwaysRenders` never touches the store, which is why a warming gap on this path went
+    unnoticed — rule 5 resolves *every* source in the after-document through the same sync
+    accessor, not just the ones the change named. Mirrors `csl_lookup_for` in
+    `app/api/adapters.py`, including reporting a failure as a reason rather than raising.
+    """
+
+    def __init__(self, reader) -> None:  # noqa: ANN001
+        self._reader = reader
+
+    def can_render(self, document):  # noqa: ANN001
+        from app.agent.fragment import source_multiset
+
+        try:
+            for source_id in sorted(source_multiset(document)):
+                self._reader.get(source_id)
+        except Exception as exc:  # noqa: BLE001 — the probe reports, never raises
+            return False, f"{type(exc).__name__}: {exc}"
+        return True, None
+
+
 # --------------------------------------------------------------------------- builders
 
 

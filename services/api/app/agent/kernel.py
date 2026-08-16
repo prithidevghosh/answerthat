@@ -272,11 +272,33 @@ class InvariantKernel:
                     f"{REJECT_IR_SCHEMA_VIOLATION}: section {section.id!r} has duplicate block orders"
                 )
 
+        before_anchors = anchors_by_id(before)
+
         for span, anchor in iter_anchors(after):
+            # A sourceless anchor is judged against what this change did to it, not
+            # against the document it found. B1 creates every parsed anchor with
+            # `source_ids=[]` and fills it in when the arbiter resolves the reference —
+            # so an orphan marker (CP-2's `orphan_marker` tier) and an unresolved
+            # reference both stay empty on purpose, and the marker is kept precisely so
+            # the user can see where it sits. Reading the whole-document state as a
+            # violation made every paper carrying one permanently un-editable: the
+            # kernel rejected every operation anywhere in the document, for a parse
+            # condition the edit neither caused nor touched. See ADR-029.
             if not anchor.source_ids:
-                reasons.append(
-                    f"{REJECT_IR_SCHEMA_VIOLATION}: anchor {anchor.anchor_id!r} carries no source_ids"
-                )
+                prior = before_anchors.get(anchor.anchor_id)
+                if prior is None:
+                    reasons.append(
+                        f"{REJECT_IR_SCHEMA_VIOLATION}: anchor {anchor.anchor_id!r} is new and "
+                        f"carries no source_ids. Only retrieval may mint a source_id; an anchor "
+                        f"that cites nothing cannot be added."
+                    )
+                elif prior[1].source_ids:
+                    reasons.append(
+                        f"{REJECT_IR_SCHEMA_VIOLATION}: anchor {anchor.anchor_id!r} carried "
+                        f"{len(prior[1].source_ids)} source_id(s) before this change and now "
+                        f"carries none. Removing a citation requires an approved removal (HR-5), "
+                        f"not an emptied anchor."
+                    )
             if not 0 <= anchor.offset_in_span <= len(span.text):
                 reasons.append(
                     f"{REJECT_IR_SCHEMA_VIOLATION}: anchor {anchor.anchor_id!r} offset "
@@ -288,7 +310,6 @@ class InvariantKernel:
                     f"{anchor.confidence} is outside [0, 1]"
                 )
 
-        before_anchors = anchors_by_id(before)
         for anchor_id in change.orphaned_anchor_ids:
             if anchor_id not in before_anchors:
                 reasons.append(

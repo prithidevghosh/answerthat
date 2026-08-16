@@ -26,6 +26,15 @@ Failures propagate. A strategy that raised is not a strategy that found nothing,
 `asyncio.gather` here is deliberately **not** `return_exceptions=True`: two working
 strategies plus one throttled one would otherwise produce a shorter candidate list that
 reads exactly like a thorough search of a thin literature.
+
+**Unavailable is not failed.** `/snippet/search` needs an S2 key: without one it answers
+429 to a single cold request, so strategy 1 is not a strategy that might fail, it is one
+that cannot run. Those are different facts and they get different handling. A strategy
+that *raises* still takes the review with it, unchanged. A strategy that is *unavailable*
+is left out of the set before the run, and `strategies` says so — which is why an
+unauthenticated review now returns candidates from the other three rather than dying at
+the first claim. The line to hold is that neither case ever becomes a silent `[]`: the
+first raises, the second is declared.
 """
 
 from __future__ import annotations
@@ -73,6 +82,10 @@ class DocumentContext:
 class CandidateGenerator:
     """Runs the three strategies and fuses their results for one claim."""
 
+    #: Every strategy ADR-005 defines, in fusion order. `strategies_for` returns the
+    #: subset that can actually run; the difference is what the reader is owed.
+    ALL_STRATEGIES = ("s2_snippet", "s2_recommendations", "openalex_search", "openalex_graph")
+
     def __init__(
         self,
         *,
@@ -86,6 +99,31 @@ class CandidateGenerator:
         self.per_strategy_limit = per_strategy_limit
         self.fused_limit = fused_limit
         self.snippets_by_source: dict[str, str] = {}
+        # Read once, strictly, at construction. Strictly because a provider that cannot
+        # say whether its search pool works is a wiring bug and should say so here rather
+        # than resolve to a plausible default; once because the answer follows from
+        # whether a key exists, which does not change while the process runs.
+        self.snippet_search_available: bool = bool(semantic_scholar.search_pool_available)
+
+    def strategies_for(self, context: DocumentContext) -> tuple[str, ...]:
+        """The strategies that will actually run for this document.
+
+        Two independent reductions, and the caller cannot tell them apart from the
+        result alone — hence this. Without a bibliography the two seeded strategies have
+        nothing to seed from; without an S2 key `s2_snippet` has no endpoint. Both are
+        legitimate, both narrow the search, and neither should be inferred from a
+        shorter findings list.
+        """
+        available = []
+        for strategy in self.ALL_STRATEGIES:
+            if strategy == "s2_snippet" and not self.snippet_search_available:
+                continue
+            if strategy == "s2_recommendations" and not context.s2_seed_ids:
+                continue
+            if strategy == "openalex_graph" and not context.openalex_seed_ids:
+                continue
+            available.append(strategy)
+        return tuple(available)
 
     async def prepare(self, context: DocumentContext) -> None:
         """Compute the document-level Recommendations seed set.
@@ -103,18 +141,27 @@ class CandidateGenerator:
 
     async def generate(self, claim: Claim, context: DocumentContext):
         """Return fused, deduped, already-cited-subtracted candidates for one claim."""
+        # `_snippets` is omitted from the gather rather than called and forgiven. There
+        # is no `return_exceptions=True` here on purpose, so calling an endpoint we know
+        # is closed would still abort every claim — the bug this replaces.
+        snippet_task = self._snippets(claim) if self.snippet_search_available else _none()
         snippets, openalex_hits, graph_hits = await asyncio.gather(
-            self._snippets(claim),
+            snippet_task,
             self._openalex_search(claim),
             self._graph_expansion(context),
         )
 
+        # An unavailable strategy contributes no ranking at all. Note this is not the
+        # same as contributing an empty one: reciprocal-rank fusion over an empty list is
+        # harmless, but the *record* of which strategies ran is what `strategies_for`
+        # reports, and a phantom `s2_snippet` in it would be a lie about coverage.
         rankings = [
-            StrategyRanking("s2_snippet", snippets),
             StrategyRanking("s2_recommendations", context.recommendations[: self.per_strategy_limit * 2]),
             StrategyRanking("openalex_search", openalex_hits),
             StrategyRanking("openalex_graph", graph_hits),
         ]
+        if snippets is not None:
+            rankings.insert(0, StrategyRanking("s2_snippet", snippets))
         return fuse_candidates(
             rankings, already_cited=context.cited_keys, limit=self.fused_limit
         )
@@ -155,5 +202,21 @@ class CandidateGenerator:
         )
 
     def snippet_for(self, source_id: str) -> str | None:
-        """The retrieved passage that surfaced this source, if a snippet did."""
+        """The retrieved passage that surfaced this source, if a snippet did.
+
+        `None` whenever `s2_snippet` did not run, which is every source in an
+        unauthenticated review. Findings still carry their evidence — ADR-006's verbatim
+        quote comes from the fetched abstract, not from here — so what is lost is the
+        matched passage shown alongside a finding, not the basis for making it.
+        """
         return self.snippets_by_source.get(source_id)
+
+
+async def _none() -> None:
+    """A placeholder coroutine for a strategy that is not running.
+
+    `asyncio.gather` needs an awaitable per slot, and `None` is deliberately not `[]`:
+    it keeps "this strategy did not run" distinguishable from "this strategy ran and
+    found nothing" all the way to the fusion step.
+    """
+    return None

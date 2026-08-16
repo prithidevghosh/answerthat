@@ -354,7 +354,7 @@ def _bind_export(services: Services, settings: Any) -> None:
     lookup = csl_lookup_for(services.sources)
     styles_dir = getattr(settings, "csl_styles_dir", None)
     services.render_probe = PandocRenderProbe(lookup, styles_dir)
-    services.exporter = LatexExporter(lookup, styles_dir)
+    services.exporter = LatexExporter(lookup, styles_dir, reader=services.sources)
 
 
 def _bind(

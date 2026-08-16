@@ -98,7 +98,23 @@ class ReviewStats:
         self.claims_without_candidates = 0
 
     def as_dict(self) -> dict[str, int]:
-        return {slot: getattr(self, slot) for slot in self.__slots__}
+        """The counters, plus the three names the SSE contract is written in.
+
+        ADR-014's promise to the reader is a `verified / total` counter, and B3's endpoint
+        documents `progress` as `{verified, total}` and `complete` as
+        `{verified, total, findings}`. The internal names are deliberately longer —
+        `claims_verified` is not `candidates_considered` — so the wire names are emitted
+        as well rather than instead: a client reading `verified` got `undefined` and
+        rendered `NaN of — claims verified`, which is exactly the in-progress-reads-as-
+        nothing failure the counter exists to prevent.
+        """
+        stats: dict[str, int] = {slot: getattr(self, slot) for slot in self.__slots__}
+        return {
+            **stats,
+            "verified": self.claims_verified,
+            "total": self.claims_total,
+            "findings": self.findings_emitted,
+        }
 
 
 class ReviewRunner:
@@ -146,6 +162,26 @@ class ReviewRunner:
         claims = await self.extractor.extract(document, section_ids or [])
         stats.claims_total = len(claims)
         yield ("progress", {"phase": "claims_extracted", **stats.as_dict()})
+
+        # Which strategies this run will actually use, said before any finding arrives.
+        # A review that searched three ways and one that searched four produce the same
+        # shaped feed, and the reader cannot tell them apart from the findings — so the
+        # coverage is stated rather than left to be inferred from how much came back.
+        # Same reasoning as `no_candidates_found` below, one level up.
+        #
+        # After extraction, not before: every `progress` payload carries `{verified,
+        # total}`, and one emitted before `claims_total` is known would put a truthful
+        # `0 of 0` on screen — the in-progress-reads-as-nothing failure `as_dict` exists
+        # to prevent.
+        strategies = self.candidates.strategies_for(context)
+        yield ("progress", {
+            "phase": "retrieval_configured",
+            "strategies": list(strategies),
+            "strategies_unavailable": [
+                s for s in self.candidates.ALL_STRATEGIES if s not in strategies
+            ],
+            **stats.as_dict(),
+        })
 
         if not claims:
             # An honest terminal state, not an empty stream: the section had nothing

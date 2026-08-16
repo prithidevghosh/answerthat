@@ -272,6 +272,68 @@ is throttling us?* Silent thinning ⇒ require it. An error status we already ra
 
 ---
 
+## ADR-010b — Unauthenticated, S2's search pool is closed, not slow. Drop the strategy; say so.
+
+**Status:** Accepted. Amends ADR-010a. Tripped by ADR-010a's own tripwire.
+
+**Context.** ADR-010a kept the key optional on the premise that anonymous access is "contended and
+bursty" — slower, with "occasional `ProviderRateLimited`". It set a tripwire: *if that becomes
+routine rather than occasional, the answer is a key or a lower request rate — not a `return []`.*
+
+It became routine. Measured 2026-08-16 from an idle machine, six calls per endpoint two seconds
+apart:
+
+| Closed | | Open | |
+|---|---|---|---|
+| `/snippet/search` | 0/6 | `/paper/search/match` | 6/6 |
+| `/paper/search` | 0/6 | `/paper/{id}/references` | 6/6 |
+| `/paper/batch` | 1/6 | `/paper/{id}/citations` | 5/6 |
+| `/paper/{id}` | 1/6 | `/recommendations/v1/papers` | 6/6 |
+
+S2 serves *search and batch* from a different pool than the rest of the Graph API. Both remedies
+ADR-010a allowed are unavailable: a key cannot be obtained (per ADR-010a's own finding, and
+confirmed — the one key we held now answers 403), and "a lower request rate" cannot help because a
+**single cold request** answers 429. S2 sends no `Retry-After`, so each attempt cost four retries
+and ~7s of backoff before raising.
+
+The consequence was worse than slowness. `candidates.py` gathers its strategies without
+`return_exceptions=True` — deliberately, so a throttled strategy cannot masquerade as a thin
+literature — so the first claim of every review died. `abstracts.py` propagates for the same
+reason, so a 429 at step 1 killed the resolve *before* OpenAlex, losing the step that would have
+answered. An optional key was behaving like a required one.
+
+**Decision.** Endpoints on S2's search pool are gated by `search_pool_available`, which is
+`authenticated`. Callers ask before running: `CandidateGenerator` omits `s2_snippet` from the
+strategy set, `AbstractResolver` skips steps 1 and 3 so OpenAlex leads. Calling a gated endpoint
+anyway raises `ProviderEndpointUnavailable` before any HTTP — a distinct type, deliberately **not**
+a `ProviderRateLimited` subclass, so "we did not ask" stays separable from "we asked and were
+throttled". The reduction is reported: `strategies_for()`, a `retrieval_configured` progress event,
+and `AbstractResult.skipped`.
+
+This amends ADR-010a's "`authenticated` … reported, never branched on". That line assumed anonymous
+access works. There is now exactly one branch, and it selects *which endpoints to call* — never what
+to do with a response.
+
+**Reasoning.** ADR-010's invariant is that a throttled search must never reach the reader as an
+empty literature. Skipping a declared-unavailable strategy does not violate it, because nothing is
+disguised: the system states which strategies ran, so a narrower search is legible as a narrower
+search rather than as a clean paper. The prohibited branch — `except ProviderRateLimited: return []`
+— remains prohibited, and an *available* strategy that raises still takes the review with it.
+
+**Consequences.** Without a key the review runs three strategies instead of four. What is lost is
+passage-level evidence: `matched_passage` is null, and the prefilter and reranker lose snippet
+context, so ranking is somewhat worse. What is **not** lost is any finding's basis — ADR-006's
+verbatim quote comes from the fetched abstract, and the verifier never read snippets. ADR-005's
+"only genuinely semantic signal", bibliography-seeded Recommendations, is on the pool that answers
+anonymously and is untouched, as is the arbiter's `match_reference`.
+
+**Tripwire, replacing ADR-010a's.** If the *open* column starts failing too, the shared pool is gone
+entirely and S2 becomes OpenAlex-only for retrieval — a re-measurement, not a `return []`. And if a
+key is ever obtained, nothing needs unwinding: `search_pool_available` becomes true and the fourth
+strategy comes back on its own.
+
+---
+
 ## ADR-011 — Style detection by round-trip scoring
 
 **Status:** Accepted
@@ -682,3 +744,44 @@ already-parsed documents point at. This does not reopen ADR-020: the exception i
 with a default*, which cannot lose data and cannot fail against existing rows. A column being
 dropped, renamed or retyped is still the Alembic conversation ADR-020 defers, and still needs its
 own decision.
+
+---
+
+## ADR-029 — Rule 4 judges the change, not the document it found
+
+**Status:** Accepted (sharpens the kernel rules in Appendix A)
+
+**Context.** "IR schema violation" was implemented as a whole-document scan of the *after*
+document, and one of its checks was that every `CitationAnchor` carries at least one
+`source_id`. But B1 creates every parsed anchor with `source_ids=[]` and fills it in only when
+the arbiter resolves that reference. Two CP-2 tiers never resolve by design: `orphan_marker`
+(an in-text marker with no matching bibliography entry) and `parsed_unresolved`. The anchor is
+still created — deliberately, so the marker survives export and the user can see where it sits.
+
+The consequence was total. A document with a single orphan marker could not be edited *at all*:
+every operation, anywhere in the paper, came back REJECT with a list of anchors the operation
+had never touched, after burning both planner retries on feedback no plan could act on. Observed
+on a real 40-reference paper (34 resolved, 6 unresolved, 4 orphan markers) — 7 sourceless
+anchors, and every command refused.
+
+**Decision.** Rule 4's sourceless-anchor check compares against the before document. It rejects
+exactly two things: an anchor the change **added** with no sources, and an anchor whose sources
+the change **emptied**. An anchor that was already sourceless and still is passes.
+
+**Reasoning.** The kernel's authority is over what an edit does. A pre-existing parse state is
+not something an edit can be guilty of, and refusing an edit for it is both unactionable — no
+rewording of the command can fix it, so the retry budget is spent on nothing — and misleading:
+HR-3 asks that a refusal say what is wrong, and "anchor `anc_x` carries no source_ids" invited
+the reader to think the edit had broken a citation.
+
+Nothing is loosened that another rule was holding. A fabricated `source_id` is rule 1, a
+shrinking citation multiset is rule 2 (HR-5), an unsupported new claim is rule 3, and both
+newly-empty cases above are still rule 4. What is given up is the kernel acting as a validator
+for B1's output, which was never its job: a parse that loses references reports that in CP-2's
+count strip, where it can be acted on.
+
+**Consequences.** Papers with unresolved references — that is, most real papers — are editable.
+An orphan-marker anchor now travels through detach → transform → reattach like any other; with
+no sources it renders in the edit console as its anchor id rather than a citation label, which
+is honest but plain, and is the obvious thing to improve when orphan markers get first-class
+treatment in the UI.

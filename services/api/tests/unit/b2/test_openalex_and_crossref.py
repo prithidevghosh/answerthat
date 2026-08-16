@@ -250,9 +250,19 @@ async def test_crossref_reports_it_supplies_no_abstracts(crossref) -> None:
 
 
 class _StubProvider:
-    def __init__(self, result: tuple[str | None, AbstractSource]) -> None:
+    """Stands in for either end of the chain.
+
+    `search_pool_available` is what the resolver reads to decide whether S2's two steps
+    can run at all; it is True here so these tests cover the full four-step chain. The
+    unauthenticated shape is covered separately, below.
+    """
+
+    def __init__(
+        self, result: tuple[str | None, AbstractSource], search_pool_available: bool = True
+    ) -> None:
         self.result = result
         self.calls = 0
+        self.search_pool_available = search_pool_available
 
     async def get_abstract(self, source_id: str) -> tuple[str | None, AbstractSource]:
         self.calls += 1
@@ -337,6 +347,11 @@ async def test_a_rate_limit_mid_chain_propagates(oa, openalex_work) -> None:
     (record,) = await provider.search_works("open access")
 
     class _Throttled:
+        # Available, and throttled anyway — which is the case this test is about. A
+        # provider that declared itself unavailable would be skipped rather than
+        # attempted, and the propagation under test would never get a chance to happen.
+        search_pool_available = True
+
         async def get_abstract(self, source_id: str):
             raise ProviderRateLimited("s2 throttled")
 
@@ -350,3 +365,84 @@ async def test_a_rate_limit_mid_chain_propagates(oa, openalex_work) -> None:
                 update={"abstract": None, "abstract_source": AbstractSource.UNAVAILABLE}
             )
         )
+
+
+async def test_an_unauthenticated_s2_is_skipped_so_openalex_can_answer(
+    oa, openalex_work
+) -> None:
+    """The regression that made an optional key behave like a required one.
+
+    `/paper/{id}` is on S2's search pool, so unauthenticated it raises. Step 1 raising
+    propagated past step 2 and killed the resolve — losing OpenAlex, the step that would
+    have answered, to protect an honesty property that was never at risk. The step is now
+    skipped, and the chain returns real evidence.
+    """
+    provider, _ = oa({"/works": {"results": [openalex_work]}})
+    (record,) = await provider.search_works("open access")
+
+    s2 = _StubProvider((None, AbstractSource.UNAVAILABLE), search_pool_available=False)
+    resolver = AbstractResolver(
+        semantic_scholar=s2,
+        openalex=_StubProvider(("Inverted abstract.", AbstractSource.OPENALEX_INVERTED)),
+    )
+
+    result = await resolver.resolve(
+        record.model_copy(update={"abstract": None, "abstract_source": AbstractSource.UNAVAILABLE})
+    )
+
+    assert result.available is True
+    assert result.source is AbstractSource.OPENALEX_INVERTED
+    assert s2.calls == 0, "a closed endpoint must not be called"
+
+
+async def test_a_skipped_step_is_declared_not_counted_as_attempted(oa, openalex_work) -> None:
+    """"We never asked" and "we asked and got nothing" are different, and both are said.
+
+    A chain shortened by a missing key and one shortened by a record S2 has no abstract
+    for both end in `unavailable`; only the first is a configuration the operator can fix,
+    so the two must not read the same (HR-3).
+    """
+    provider, _ = oa({"/works": {"results": [openalex_work]}})
+    (record,) = await provider.search_works("open access")
+
+    resolver = AbstractResolver(
+        semantic_scholar=_StubProvider(
+            (None, AbstractSource.UNAVAILABLE), search_pool_available=False
+        ),
+        openalex=_StubProvider((None, AbstractSource.UNAVAILABLE)),
+    )
+
+    result = await resolver.resolve(
+        record.model_copy(update={"abstract": None, "abstract_source": AbstractSource.UNAVAILABLE})
+    )
+
+    assert result.source is AbstractSource.UNAVAILABLE
+    assert result.attempted == (AbstractSource.OPENALEX_INVERTED,)
+    assert result.skipped == (AbstractSource.S2, AbstractSource.TLDR)
+
+
+async def test_a_stored_tldr_survives_an_unauthenticated_chain(oa, openalex_work) -> None:
+    """It came from a response that did reach S2, so it needs no live call to reuse.
+
+    Half of step 3 is a lookup and half is a value already on the record. The gate closes
+    the first and leaves the second, which is the difference between "S2 is unreachable"
+    and "everything S2 ever told us is void".
+    """
+    provider, _ = oa({"/works": {"results": [openalex_work]}})
+    (record,) = await provider.search_works("open access")
+
+    resolver = AbstractResolver(
+        semantic_scholar=_StubProvider(
+            (None, AbstractSource.UNAVAILABLE), search_pool_available=False
+        ),
+        openalex=_StubProvider((None, AbstractSource.UNAVAILABLE)),
+    )
+
+    result = await resolver.resolve(
+        record.model_copy(
+            update={"abstract": "A stored one-liner.", "abstract_source": AbstractSource.TLDR}
+        )
+    )
+
+    assert result.source is AbstractSource.TLDR
+    assert result.text == "A stored one-liner."

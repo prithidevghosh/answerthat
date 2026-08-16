@@ -386,6 +386,55 @@ def test_rejects_an_anchor_whose_offset_falls_outside_its_span(kernel, base_docu
     assert REJECT_IR_SCHEMA_VIOLATION in codes(verdict)
 
 
+def test_rejects_a_new_anchor_that_cites_nothing(kernel, base_document):
+    """An anchor the change invented with no source is a citation that cites nothing."""
+    bad = make_span("span-3", "We train on a single GPU.", [make_anchor("anc-new", [], offset=24)])
+    verdict = kernel.evaluate(
+        before=base_document,
+        change=change({"replace_spans": [bad.model_dump()]}),
+        context=ChangeContext(derived_spans={"span-3": ["span-3"]}),
+    )
+    assert verdict.decision == "reject"
+    assert REJECT_IR_SCHEMA_VIOLATION in codes(verdict)
+    assert any("is new and carries no source_ids" in r for r in verdict.reasons)
+
+
+def test_rejects_emptying_the_sources_of_an_existing_anchor(kernel, base_document):
+    """Stripping an anchor's sources is a removal wearing a schema's clothes (HR-5)."""
+    emptied = make_span(
+        "span-1", "Transformers dominate sequence modelling.", [make_anchor("anc-1", [], offset=41)]
+    )
+    verdict = kernel.evaluate(
+        before=base_document,
+        change=change({"replace_spans": [emptied.model_dump()]}),
+        context=ChangeContext(derived_spans={"span-1": ["span-1"]}),
+    )
+    assert verdict.decision == "reject"
+    assert REJECT_IR_SCHEMA_VIOLATION in codes(verdict)
+    assert any("carries none" in r for r in verdict.reasons)
+
+
+def test_accepts_a_change_beside_a_pre_existing_sourceless_anchor(kernel, base_document):
+    """CP-2's `orphan_marker` tier is a parse state, not a violation to punish.
+
+    B1 creates every parsed anchor empty and fills it in when the arbiter resolves the
+    reference, so an unmatched in-text marker stays empty for the life of the document.
+    Reading that as REJECT made every paper containing one un-editable *anywhere* —
+    which is what this test exists to stop coming back (ADR-029).
+    """
+    orphan_marker = make_anchor("anc-orphan", [], offset=0, marker="(Touvron et al., 2023)")
+    with_orphan = base_document.model_copy(deep=True)
+    with_orphan.sections[0].blocks[0].spans[0].citation_anchors.append(orphan_marker)
+
+    rewritten = make_span("span-3", "We train on one GPU.")
+    verdict = kernel.evaluate(
+        before=with_orphan,
+        change=change({"replace_spans": [rewritten.model_dump()]}),
+        context=ChangeContext(derived_spans={"span-3": ["span-3"]}),
+    )
+    assert verdict.decision == "accept", verdict.reasons
+
+
 def test_rejects_an_orphaned_anchor_id_that_does_not_exist(kernel, base_document):
     verdict = kernel.evaluate(
         before=base_document,

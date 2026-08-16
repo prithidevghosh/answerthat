@@ -139,6 +139,22 @@ def test_export_refuses_without_a_style(sample_doc: Document, sources: dict) -> 
         export_latex(sample_doc, sources, styles_dir=STYLES_DIR)
 
 
+def test_the_render_probe_does_not_need_a_chosen_style(sample_doc: Document, sources: dict) -> None:
+    """The kernel's rule 5 asks whether the document renders, not how it should look.
+
+    ADR-011 leaves an ambiguous style to the user, so most documents carry `style_id=None`
+    for a while. When the probe inherited export's refusal, every edit to such a document
+    came back `pandoc_refused: no citation style selected` — a rejection of the *edit* for
+    a choice nobody had been asked to make. Export's refusal above is unaffected.
+    """
+    from app.api.adapters import PandocRenderProbe
+
+    assert sample_doc.metadata.style_id is None
+    probe = PandocRenderProbe(lambda _doc: sources, STYLES_DIR)
+    ok, reason = probe.can_render(sample_doc)
+    assert ok, reason
+
+
 def test_export_renders_through_pandoc(sample_doc: Document, sources: dict) -> None:
     result = export_latex(sample_doc, sources, style_id="ieee", styles_dir=STYLES_DIR)
     assert result.latex.startswith("%") or "\\documentclass" in result.latex

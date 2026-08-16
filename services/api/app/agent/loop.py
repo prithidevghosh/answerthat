@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from app.agent.diff import StructuralDiff, build_diff
 from app.agent.executor import OperationExecutor
+from app.agent.fragment import source_multiset
 from app.agent.kernel import ChangeContext, InvariantKernel, ReattachmentRecord
 from app.agent.metrics import METRICS, MetricsRegistry
 from app.agent.planner import Planner, PlanningError, validate_plan
@@ -214,7 +215,7 @@ class CommandLoop:
 
             change = execution.change
             assert change is not None
-            await warm_sources_for(self._kernel, change)
+            await warm_sources_for(self._kernel, change, working)
             verdict = self._kernel.evaluate(before=working, change=change, context=execution.context)
 
             if verdict.decision == "reject":
@@ -253,17 +254,26 @@ class CommandLoop:
         )
 
 
-async def warm_sources_for(kernel: InvariantKernel, change: ProposedChange) -> None:
-    """Index every `source_id` the kernel is about to check, before it checks it.
+async def warm_sources_for(
+    kernel: InvariantKernel, change: ProposedChange, document: Document
+) -> None:
+    """Index every `source_id` the kernel is about to touch, before it touches it.
 
     Called on the two paths that reach `evaluate`: here and `VersionService.commit`. The
     ids a change *claims* are exactly the ids we warm, fabricated ones included — those come
     back known-absent and REJECT rule 1 fires on a real answer rather than on an exception.
+
+    `document` is warmed as well, and rule 1 is not the reason. Rule 5 renders the whole
+    after-document, and the exporter resolves every source in the bibliography through the
+    same sync accessor — so warming only the change's ids made a *typical* edit raise
+    `SourceNotIndexed` for a citation it never touched. The probe caught it and reported it
+    as `pandoc_refused`, which named the wrong component: nothing was wrong with the
+    document, the store had simply not been asked about those ids.
     """
     warm = getattr(kernel.sources, "warm", None)
     if warm is None:
         return
-    ids = kernel.referenced_source_ids(change)
+    ids = list(dict.fromkeys([*kernel.referenced_source_ids(change), *source_multiset(document)]))
     if ids:
         await warm(ids)
 

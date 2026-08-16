@@ -36,6 +36,74 @@ class PlanningError(RuntimeError):
 # --------------------------------------------------------------------------- schema
 
 
+def _closed_object(properties: dict) -> dict:
+    """Strict structured output wants `additionalProperties: false` and every property named
+    in `required` on every object. Leaving a property out of `required` is a 400 at request
+    time, not a looser schema — optionality is expressed with a nullable type instead."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(properties),
+        "properties": properties,
+    }
+
+
+def params_schema() -> dict:
+    """Every parameter any operation takes, flattened into one closed object.
+
+    `params` cannot be a bare `{"type": "object"}` here: strict structured output rejects an
+    object that declares no properties, so the seven params models in `app.agent.operations`
+    are unioned and each field made nullable. The union is a wire shape only — the fields an
+    operation does not use come back null, are dropped in `_materialize`, and what survives
+    is still validated by `parse_params` against the one model its op type demands.
+    """
+    return _closed_object(
+        {
+            "count": {
+                "type": ["integer", "null"],
+                "description": "AddCitations, FindSupport: how many citations to look for (1-20)",
+            },
+            "criteria": {
+                "type": ["string", "null"],
+                "description": "AddCitations: what kind of support to look for",
+            },
+            "claim_ids": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+                "description": "FindSupport: the claims to find support for",
+            },
+            "ratio": {
+                "type": ["number", "null"],
+                "description": "Shorten: target length as a fraction of the original, between 0 and 1",
+            },
+            "instruction": {
+                "type": ["string", "null"],
+                "description": "RewriteSection, FreeformEdit: what to do, in words. Never prose to insert",
+            },
+            "anchor_id": {
+                "type": ["string", "null"],
+                "description": "ReplaceCitation: the anchor whose source is swapped",
+            },
+            "new_source_id": {
+                "type": ["string", "null"],
+                "description": "ReplaceCitation: an existing source_id. Never invent one",
+            },
+            "old_source_id": {
+                "type": ["string", "null"],
+                "description": "ReplaceCitation: the source being replaced, or null for the anchor's only one",
+            },
+            "to_section_id": {
+                "type": ["string", "null"],
+                "description": "MoveText: the destination section id",
+            },
+            "after_block_id": {
+                "type": ["string", "null"],
+                "description": "MoveText: place after this block, or null for the end of the section",
+            },
+        }
+    )
+
+
 def edit_plan_schema() -> dict:
     """The only shape the planner may return. Note what is absent: no free text field,
     no `text`, no `source_id`, no `csl`."""
@@ -47,11 +115,8 @@ def edit_plan_schema() -> dict:
             "operations": {
                 "type": "array",
                 "maxItems": 12,
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["op", "target_ids"],
-                    "properties": {
+                "items": _closed_object(
+                    {
                         "op": {"type": "string", "enum": [t.value for t in OperationType]},
                         "target_ids": {
                             "type": "array",
@@ -59,23 +124,34 @@ def edit_plan_schema() -> dict:
                             "minItems": 1,
                             "description": "section, block or span ids taken from the outline",
                         },
-                        "params": {
-                            "type": "object",
-                            "description": "operation-specific parameters; see the system prompt",
-                        },
+                        "params": params_schema(),
                         "no_typed_op_applies": {
                             "type": "boolean",
-                            "description": "required true for FreeformEdit, false otherwise",
+                            "description": "true for FreeformEdit, false for every other operation",
                         },
                         "justification": {
-                            "type": "string",
+                            "type": ["string", "null"],
                             "description": "required for FreeformEdit: why no typed operation fits",
                         },
-                    },
-                },
+                    }
+                ),
             }
         },
     }
+
+
+def _drop_null_params(item: object) -> object:
+    """Undo the flattening `params_schema` forces on the wire.
+
+    The schema makes every param nullable, so a Shorten comes back carrying nine nulls it
+    has no use for. They are dropped here rather than in `parse_params`, so the params model
+    sees the fields the operation actually set and applies its own defaults to the rest —
+    `count=None` is a validation error, an absent `count` is 3. Anything that is not the
+    expected shape passes through untouched, so the ValidationError names the real problem.
+    """
+    if not isinstance(item, dict) or not isinstance(item.get("params"), dict):
+        return item
+    return {**item, "params": {k: v for k, v in item["params"].items() if v is not None}}
 
 
 def document_outline(document: Document) -> str:
@@ -153,7 +229,7 @@ class Planner:
                 f"structured output is required"
             )
         try:
-            operations = [Operation.model_validate(item) for item in raw["operations"]]
+            operations = [Operation.model_validate(_drop_null_params(item)) for item in raw["operations"]]
         except (ValidationError, TypeError) as exc:
             raise PlanningError(f"planner emitted an operation that is not an Operation: {exc}") from exc
 
@@ -193,4 +269,11 @@ def validate_plan(plan: EditPlan, document: Document) -> list[str]:
     return problems
 
 
-__all__ = ["Planner", "PlanningError", "document_outline", "edit_plan_schema", "validate_plan"]
+__all__ = [
+    "Planner",
+    "PlanningError",
+    "document_outline",
+    "edit_plan_schema",
+    "params_schema",
+    "validate_plan",
+]

@@ -11,6 +11,12 @@ those two contribute nothing, so a bare `find_candidates(claim)` runs on **two**
 strategies rather than four. That is a real reduction in coverage, so it is reported
 rather than hidden: pass `doc_id=` (or call `prime(doc_id)` once) to get the full set,
 and read `last_strategies` to see which ones actually ran.
+
+A second reduction stacks on that one: `s2_snippet` needs a Semantic Scholar key, and
+without one it does not run at all (see `SEARCH_POOL_ENDPOINTS`). So the full set on an
+unauthenticated deployment is three, not four. `last_strategies` is the single place to
+read what happened — it is asked of the generator rather than reconstructed here, so it
+cannot drift from what the generator actually did.
 """
 
 from __future__ import annotations
@@ -75,11 +81,11 @@ class RetrievalService:
     ) -> list[str]:
         """Ranked `source_id`s for this claim, minus everything the paper already cites."""
         context = await self.prime(doc_id) if doc_id else DocumentContext([])
-        self.last_strategies = (
-            ("s2_snippet", "s2_recommendations", "openalex_search", "openalex_graph")
-            if context.has_bibliography
-            else ("s2_snippet", "openalex_search")
-        )
+        # Asked, not restated. This list used to be spelled out here from
+        # `has_bibliography` alone, which was a second copy of the generator's rule and
+        # went wrong the moment a strategy could be dropped for a reason this end did not
+        # know about — an unauthenticated `s2_snippet` was reported as having run.
+        self.last_strategies = self.generator.strategies_for(context)
         candidates = await self.generator.generate(claim, context)
         return [candidate.source_id for candidate in candidates[:limit]]
 

@@ -60,6 +60,31 @@ class StyleSelection(BaseModel):
     style_id: str
 
 
+class PlaceholderCount(BaseModel):
+    type: Literal["figure", "table", "equation"]
+    count: int
+
+
+class ExportManifest(BaseModel):
+    """What the user is about to download, described before they download it.
+
+    `style_id` is nullable on purpose. Style detection returns `ambiguous` rather than
+    guessing (CP-3), and until the user picks, there is no style — so the manifest says
+    so and `exportable` is false. Handing over a download button that 500s at the click
+    is the silent failure HR-3 forbids; naming the reason here lets the UI point at the
+    decision that unblocks it.
+    """
+
+    doc_id: str
+    version: int
+    filename: str
+    placeholder_blocks: list[PlaceholderCount] = Field(default_factory=list)
+    bibliography_entries: int
+    style_id: str | None = None
+    exportable: bool = True
+    blocked_reason: str | None = None
+
+
 class CommandRequest(BaseModel):
     """ADR-021: a command names the version it was composed against.
 

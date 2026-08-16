@@ -24,6 +24,7 @@ from app.core.contracts import (
     VerificationLabel,
 )
 from app.providers.abstracts import AbstractResolver
+from app.review.candidates import CandidateGenerator
 from app.review.claims import ClaimExtractor
 from app.review.fusion import StrategyRanking, cited_keys_for, fuse_candidates
 from app.review.llm import ReviewLLM
@@ -637,15 +638,23 @@ class _FakeSourceStore:
 
 
 class _FakeCandidates:
-    def __init__(self, candidates) -> None:
+    ALL_STRATEGIES = CandidateGenerator.ALL_STRATEGIES
+
+    def __init__(self, candidates, strategies=None) -> None:
         self.candidates = candidates
         self.snippets_by_source: dict[str, str] = {}
+        # Defaults to the full set, so a test that says nothing about strategies is
+        # testing the unreduced case rather than an accidentally narrowed one.
+        self._strategies = tuple(strategies) if strategies is not None else self.ALL_STRATEGIES
 
     async def prepare(self, context):
         return None
 
     async def generate(self, claim, context):
         return self.candidates
+
+    def strategies_for(self, context):
+        return self._strategies
 
     def snippet_for(self, source_id):
         return None
@@ -714,9 +723,24 @@ async def test_progress_reports_verified_over_total_throughout() -> None:
 
     progress = [payload for name, payload in events if name == "progress"]
     assert progress[0]["claims_total"] == 3
-    assert [p["claims_verified"] for p in progress] == [0, 1, 2, 3]
+    # Asserted per phase rather than as one flat list, so that adding a setup event does
+    # not read as a regression in the counter. What matters is that the count advances
+    # once per claim and never goes backwards — not how many events precede the first.
+    assert [p["claims_verified"] for p in progress if p["phase"] == "claim_verified"] == [1, 2, 3]
+    verified = [p["claims_verified"] for p in progress]
+    assert verified == sorted(verified), "the verified counter must never go backwards"
     assert events[-1][0] == "done"
     assert events[-1][1]["claims_verified"] == 3
+
+    # ...and under the names the SSE contract is written in. ADR-014 promises the reader a
+    # `verified / total` counter and B3's endpoint documents those two keys; the pipeline
+    # emitted only the longer internal ones, so the UI read `undefined` and rendered
+    # "NaN of — claims verified" — a running review displaying as no review at all.
+    assert [p["verified"] for p in progress if p["phase"] == "claim_verified"] == [1, 2, 3]
+    assert all(p["total"] == 3 for p in progress)
+    assert events[-1][1]["verified"] == 3
+    assert events[-1][1]["total"] == 3
+    assert "findings" in events[-1][1]
 
 
 async def test_a_quote_check_kill_is_counted_in_progress_not_hidden() -> None:
@@ -921,3 +945,27 @@ async def test_no_citable_claims_ends_with_an_explicit_reason() -> None:
     events = [e async for e in _runner().stream("doc_1")]
     assert events[-1] == ("done", {**events[-1][1]})
     assert events[-1][1]["reason"] == "no_citable_claims"
+
+
+async def test_the_stream_states_which_strategies_it_searched_with() -> None:
+    """Coverage is declared, not inferred from how many findings came back.
+
+    A three-strategy review and a four-strategy one produce the same shaped feed. Without
+    this event the only signal that an S2 key is missing is a slightly shorter findings
+    list, which reads as a clean paper rather than as a narrower search.
+    """
+    claim = Claim(claim_id="clm_1", text="A claim.", span_id="spn_1", citability=0.9)
+    runner = _runner(
+        extractor=_FakeExtractor([claim]),
+        candidates=_FakeCandidates(
+            [], strategies=("s2_recommendations", "openalex_search", "openalex_graph")
+        ),
+    )
+
+    events = [e async for e in runner.stream("doc_1")]
+    configured = [p for name, p in events if name == "progress" and p["phase"] == "retrieval_configured"]
+
+    assert len(configured) == 1
+    assert configured[0]["strategies_unavailable"] == ["s2_snippet"]
+    # Still a well-formed progress payload: ADR-014's counter is on every one of them.
+    assert configured[0]["total"] == 1

@@ -88,6 +88,29 @@ def _prune(csl: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- Semantic Scholar
 
 
+def _s2_object(paper: dict[str, Any], key: str) -> dict[str, Any]:
+    """`journal` / `publicationVenue` as an object, whatever S2 actually sent.
+
+    Both are documented as objects and both arrive as a bare string sometimes — the venue
+    name, with no `name` key to read it from. `.get()` on that string raises
+    `AttributeError: 'str' object has no attribute 'get'`, which took down the whole
+    review from inside `_store_papers`: one oddly-shaped recommended paper, and a
+    fifteen-claim run ended with zero verified. Companion to `_s2_name`, which is where
+    the string form is read rather than discarded.
+    """
+    value = paper.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _s2_name(paper: dict[str, Any], key: str) -> str | None:
+    """The venue name from either shape. A string field is the name."""
+    value = paper.get(key)
+    if isinstance(value, dict):
+        name = value.get("name")
+        return name if isinstance(name, str) and name.strip() else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def _s2_type(paper: dict[str, Any]) -> str:
     types = {t.lower() for t in (paper.get("publicationTypes") or []) if t}
     if "conference" in types:
@@ -96,10 +119,10 @@ def _s2_type(paper: dict[str, Any]) -> str:
         return "chapter" if "booksection" in types else "book"
     if "review" in types or "journalarticle" in types:
         return "article-journal"
-    venue_type = ((paper.get("publicationVenue") or {}).get("type") or "").lower()
+    venue_type = (_s2_object(paper, "publicationVenue").get("type") or "").lower()
     if venue_type == "conference":
         return "paper-conference"
-    if not paper.get("venue") and not (paper.get("journal") or {}).get("name"):
+    if not paper.get("venue") and not _s2_name(paper, "journal"):
         # No venue at all is the shape of a preprint or a dataset record.
         return "article"
     return "article-journal"
@@ -128,16 +151,17 @@ def _provider_facts(provider: str, **facts: Any) -> dict[str, Any] | None:
 
 def s2_paper_to_csl(paper: dict[str, Any]) -> dict[str, Any]:
     external = paper.get("externalIds") or {}
-    journal = paper.get("journal") or {}
-    venue_obj = paper.get("publicationVenue") or {}
-    authors = [a for a in (paper.get("authors") or []) if a]
+    journal = _s2_object(paper, "journal")
+    authors = [a for a in (paper.get("authors") or []) if isinstance(a, dict)]
 
     csl: dict[str, Any] = {
         "type": _s2_type(paper),
         "title": paper.get("title"),
         "author": [split_person_name(a.get("name", "")) for a in authors],
         "issued": _issued(paper.get("year")),
-        "container-title": journal.get("name") or venue_obj.get("name") or paper.get("venue"),
+        "container-title": (
+            _s2_name(paper, "journal") or _s2_name(paper, "publicationVenue") or paper.get("venue")
+        ),
         "volume": journal.get("volume"),
         "page": journal.get("pages"),
         "DOI": normalize_doi(external.get("DOI")),

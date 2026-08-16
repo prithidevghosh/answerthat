@@ -43,3 +43,6 @@ Rules:
 4. Emit multiple operations when a command has multiple parts.
 5. If the command cannot be expressed at all, return an empty operations list rather than
    guessing.
+6. `params` carries every parameter any operation could take. Fill in only the ones listed
+   above for the operation you chose and set every other one to null. Set
+   `no_typed_op_applies` to false and `justification` to null on anything but FreeformEdit.

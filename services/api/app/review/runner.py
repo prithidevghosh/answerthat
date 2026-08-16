@@ -22,11 +22,14 @@ land in Redis, and neither `start()` nor `stream()` changes shape.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal
 
 from app.core.config import Settings
+
+log = logging.getLogger("app.review.runner")
 
 __all__ = ["ReviewJob", "ReviewJobRunner", "get_review_runner"]
 
@@ -143,6 +146,13 @@ class ReviewJobRunner:
             # HR-3: the failure becomes a visible terminal state, not a stream that
             # simply stops. A truncated feed with no error looks like a finished review
             # that found less than it should have.
+            #
+            # Logged with its traceback as well as sent: this is the only exception
+            # handler between the pipeline and the browser, and the user-facing string is
+            # one line by design. `AttributeError: 'str' object has no attribute 'get'`
+            # is an honest terminal state and a useless bug report — the operator needs
+            # the frame it came from, and nothing else in the process was going to print it.
+            log.exception("review job %s failed for document %s", job.job_id, job.doc_id)
             await self.record_failure(job.doc_id, f"{type(exc).__name__}: {exc}")
 
     async def record_failure(self, doc_id: str, message: str) -> None:

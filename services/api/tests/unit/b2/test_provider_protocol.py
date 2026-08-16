@@ -42,13 +42,19 @@ def test_provider_signatures_match_appendix_a(adapter) -> None:
 
 
 class _FakeS2:
-    """Records which strategies were invoked, and with what."""
+    """Records which strategies were invoked, and with what.
 
-    def __init__(self, snippets=(), recommendations=()) -> None:
+    `search_pool_available` mirrors the real adapter's property: keyed deployments have
+    `/snippet/search`, unauthenticated ones do not. It defaults to True so that existing
+    tests keep exercising the four-strategy path.
+    """
+
+    def __init__(self, snippets=(), recommendations=(), search_pool_available=True) -> None:
         self._snippets = list(snippets)
         self._recommendations = list(recommendations)
         self.snippet_queries: list[str] = []
         self.recommendation_seeds: list[list[str]] = []
+        self.search_pool_available = search_pool_available
 
     async def snippet_search(self, query, limit=10):
         self.snippet_queries.append(query)
@@ -196,3 +202,90 @@ async def test_a_document_with_no_resolved_bibliography_skips_the_seeded_strateg
 
     assert s2.recommendation_seeds == []
     assert openalex.expansion_seeds == []
+
+
+# --------------------------------------------- an unauthenticated deployment (ADR-010a, amended)
+
+
+async def test_without_a_key_the_snippet_strategy_is_dropped_not_attempted(
+    claim, source_record
+) -> None:
+    """The bug this replaces: one closed endpoint took every claim down with it.
+
+    `/snippet/search` needs a key, and `asyncio.gather` here has no `return_exceptions`,
+    so calling it unauthenticated aborted the review at its first claim. It is now left
+    out of the run, and the other strategies still produce candidates.
+    """
+    s2 = _FakeS2(snippets=[source_record("src_snip", "A snippet paper", "10.1/snip")],
+                 search_pool_available=False)
+    openalex = _FakeOpenAlex(search=[source_record("src_oa", "An OpenAlex paper", "10.1/oa")])
+    generator = CandidateGenerator(semantic_scholar=s2, openalex=openalex)
+
+    candidates = await generator.generate(claim, DocumentContext([]))
+
+    assert s2.snippet_queries == [], "a closed endpoint must not be called"
+    assert [c.source_id for c in candidates] == ["src_oa"]
+    assert {c.strategy for c in candidates} == {"openalex_search"}
+
+
+async def test_the_dropped_strategy_is_reported_not_silently_missing(claim) -> None:
+    """A three-strategy review and a four-strategy one must not look identical.
+
+    This is the same honesty the module already applies to a missing bibliography, for a
+    second reason the caller cannot otherwise see.
+    """
+    generator = CandidateGenerator(
+        semantic_scholar=_FakeS2(search_pool_available=False), openalex=_FakeOpenAlex()
+    )
+
+    assert generator.snippet_search_available is False
+    assert generator.strategies_for(DocumentContext([])) == ("openalex_search",)
+
+
+async def test_an_unauthenticated_run_still_uses_recommendations_and_graph(
+    claim, source_record
+) -> None:
+    """What survives without a key, asserted rather than assumed.
+
+    Recommendations is ADR-005's "only genuinely semantic signal", and it is on the pool
+    that answers anonymously — so the strategy the design leans on hardest is the one the
+    missing key does not touch.
+    """
+    cited = source_record("src_cited", "A cited paper", "10.1/cited")
+    cited.csl["custom"] = {"s2_paper_id": "s2id_a", "openalex_id": "W1"}
+    recommended = source_record("src_rec", "A recommended paper", "10.1/rec")
+
+    s2 = _FakeS2(recommendations=[recommended], search_pool_available=False)
+    openalex = _FakeOpenAlex(graph=[source_record("src_hop", "A one-hop paper", "10.1/hop")])
+    generator = CandidateGenerator(semantic_scholar=s2, openalex=openalex)
+
+    context = DocumentContext([cited])
+    await generator.prepare(context)
+    candidates = await generator.generate(claim, context)
+
+    assert s2.recommendation_seeds == [["s2id_a"]]
+    assert generator.strategies_for(context) == (
+        "s2_recommendations", "openalex_search", "openalex_graph",
+    )
+    assert {c.strategy for c in candidates} == {"s2_recommendations", "openalex_graph"}
+
+
+async def test_dropping_a_strategy_does_not_soften_a_throttled_one(claim) -> None:
+    """The gate narrows the strategy set; it does not turn failures into empty results.
+
+    An available strategy that raises must still take the review with it, or ADR-010's
+    invariant is gone — a thin result would again be indistinguishable from a thin
+    literature. Unavailable and failed are handled differently on purpose.
+    """
+    from app.core.contracts import ProviderRateLimited
+
+    class _Throttled(_FakeOpenAlex):
+        async def search_works(self, query, limit=10):
+            raise ProviderRateLimited("openalex throttled")
+
+    generator = CandidateGenerator(
+        semantic_scholar=_FakeS2(search_pool_available=False), openalex=_Throttled()
+    )
+
+    with pytest.raises(ProviderRateLimited):
+        await generator.generate(claim, DocumentContext([]))

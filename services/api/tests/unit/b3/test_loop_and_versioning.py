@@ -51,8 +51,8 @@ DESTRUCTIVE_REWRITE = "Entirely unrelated content about protein folding in yeast
 
 
 def build_loop(sources, planner_responses, *, text_output=CLEAN_REWRITE, claims=None,
-               candidates=None, metrics=None):
-    kernel = InvariantKernel(sources, AlwaysRenders())
+               candidates=None, metrics=None, probe=None):
+    kernel = InvariantKernel(sources, probe or AlwaysRenders())
     executor = OperationExecutor(
         sources=sources,
         retrieval=ScriptedRetrieval(default=candidates or []),
@@ -465,6 +465,33 @@ async def test_a_fabricated_id_is_warmed_too_so_the_reject_rests_on_a_real_answe
     assert result.status == "failed"
     assert "s2:fabricated" in strict.warmed
     assert any("not in the source store" in r for r in result.rejected[0].reasons)
+
+
+@pytest.mark.asyncio
+async def test_the_loop_warms_citations_the_change_never_touched(base_document):
+    """Rule 5 renders the whole document, so warming only the change's ids is not enough.
+
+    `s2:ccc` sits in another section entirely, which the Shorten of `blk-1` never touches —
+    and the bibliography still has to resolve it. Before this was fixed the probe raised
+    `SourceNotIndexed` there and the kernel reported it as `pandoc_refused`: a rendering
+    verdict about a store that had not been asked, which made the first edit to any
+    real-sized paper fail.
+    """
+    from b3_support import FakeSourceReader, RendersByResolvingEveryCitation, make_anchor
+
+    document = base_document.model_copy(deep=True)
+    elsewhere = document.sections[1].blocks[0].spans[0]
+    elsewhere.citation_anchors.append(make_anchor("anc-3", ["s2:ccc"], offset=24))
+
+    strict = FakeSourceReader(["s2:aaa", "s2:bbb", "s2:ccc"], strict=True)
+    loop, _model, _kernel = build_loop(
+        strict, [SHORTEN_PLAN], probe=RendersByResolvingEveryCitation(strict)
+    )
+
+    result = await loop.run(document, "shorten it")
+
+    assert result.status == "awaiting_approval", result.rejected
+    assert {"s2:aaa", "s2:bbb", "s2:ccc"} <= strict.warmed
 
 
 @pytest.mark.asyncio

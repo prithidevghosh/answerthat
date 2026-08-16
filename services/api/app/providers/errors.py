@@ -27,6 +27,7 @@ __all__ = [
     "SourceStoreViolation",
     "ProviderHTTPError",
     "ProviderUnavailable",
+    "ProviderEndpointUnavailable",
     "ProviderBudgetExhausted",
     "AppendOnlyViolation",
     "UnprovenanceredSource",
@@ -65,6 +66,27 @@ class ProviderUnavailable(RuntimeError):
         super().__init__(
             f"{provider} {endpoint} unreachable after {attempts} attempt(s): {cause}"
         )
+
+
+class ProviderEndpointUnavailable(RuntimeError):
+    """An endpoint this regime cannot use was called anyway.
+
+    Deliberately **not** a `ProviderRateLimited` subclass. That error means "we asked and
+    were throttled"; this one means "we did not ask, because in this configuration the
+    endpoint has no working answer to give". Conflating them would let a caller that
+    forgot to check a capability look, in the logs, exactly like one that tried honestly
+    and lost a race for the shared pool.
+
+    Raised rather than returning `[]`, for the ADR-010 reason that governs everything in
+    this module: the caller's job is to *drop the strategy and say so*, not to receive an
+    empty list it cannot distinguish from a thin literature.
+    """
+
+    def __init__(self, provider: str, endpoint: str, reason: str) -> None:
+        self.provider = provider
+        self.endpoint = endpoint
+        self.reason = reason
+        super().__init__(f"{provider} {endpoint} is unavailable in this regime: {reason}")
 
 
 class ProviderBudgetExhausted(ProviderRateLimited):

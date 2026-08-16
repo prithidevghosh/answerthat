@@ -84,6 +84,8 @@ class _FakeProviders:
 
 
 class _NullS2:
+    search_pool_available = True
+
     async def snippet_search(self, query, limit=10):
         return []
 

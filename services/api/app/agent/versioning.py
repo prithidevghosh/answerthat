@@ -145,7 +145,7 @@ class VersionService:
         last_verdict: KernelVerdict | None = None
 
         for change in approved:
-            await warm_sources_for(self._kernel, change.change)
+            await warm_sources_for(self._kernel, change.change, working)
             verdict = self._kernel.evaluate(
                 before=working, change=change.change, context=change.context
             )
@@ -396,7 +396,7 @@ class VersionService:
                 f"{sum(removals.values())} removed."
             ),
         )
-        await warm_sources_for(self._kernel, change)
+        await warm_sources_for(self._kernel, change, working)
         verdict = self._kernel.evaluate(
             before=working,
             change=change,

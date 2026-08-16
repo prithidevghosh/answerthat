@@ -154,6 +154,20 @@ class SourceReaderAdapter:
         return self._store.has(source_id)
 
 
+#: The style the probe renders in when the document has none yet.
+#:
+#: Rule 5 asks "does this document still render", not "how should it look". The probe
+#: suppresses the bibliography and throws its output away — nothing it produces is shown
+#: to anyone or written anywhere — so a fixed style here substitutes nothing. Falling back
+#: to `_resolve_style`'s refusal instead meant every edit to a paper whose style is still
+#: ambiguous (ADR-011 leaves that to the user, and most papers arrive that way) came back
+#: `pandoc_refused: no citation style selected` — a verdict about the *edit*, naming
+#: Pandoc, for a choice the user had not been asked to make yet. Export still refuses:
+#: there the style is the answer, and guessing it would be the silent substitution HR-3
+#: forbids.
+PROBE_STYLE = "ieee"
+
+
 class PandocRenderProbe:
     """B1's LaTeX exporter → B3's `RenderProbe` port (kernel REJECT rule 5).
 
@@ -176,6 +190,7 @@ class PandocRenderProbe:
                 self._sources(document),
                 styles_dir=self._styles_dir,
                 suppress_bibliography=True,
+                style_id=document.metadata.style_id or PROBE_STYLE,
             )
         except ExportFailure as exc:
             return False, str(exc)
@@ -186,14 +201,30 @@ class PandocRenderProbe:
 
 
 class LatexExporter:
-    """B1's `export_latex` → B3's `Exporter` port."""
+    """B1's `export_latex` → B3's `Exporter` port.
 
-    def __init__(self, csl_lookup: Any, styles_dir: Path | None = None) -> None:
+    Holds the reader as well as the lookup because it is the one caller that has to warm
+    it. The lookup reads through B2's *sync* accessors, which raise `SourceNotIndexed` for
+    an id nobody warmed (see `SourceReaderAdapter` above) — and unlike the command loop,
+    which warms the ids the kernel is about to check, nothing on the export path had done
+    it. So every export raised `SourceNotIndexed` out of the route as a bare 500 whenever
+    the in-process index was cold, which after any API restart it always is. `to_latex` is
+    already async precisely so it can await something like this.
+    """
+
+    def __init__(
+        self, csl_lookup: Any, styles_dir: Path | None = None, reader: Any = None
+    ) -> None:
         self._sources = csl_lookup
         self._styles_dir = styles_dir
+        self._reader = reader
 
     async def to_latex(self, document: Document) -> str:
         from app.export.latex import export_latex  # noqa: PLC0415
+        from app.ir.traversal import source_id_multiset  # noqa: PLC0415
+
+        if self._reader is not None:
+            await self._reader.warm(sorted(source_id_multiset(document)))
 
         return export_latex(
             document, self._sources(document), styles_dir=self._styles_dir

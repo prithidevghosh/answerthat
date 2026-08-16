@@ -20,6 +20,12 @@ Operating constraints that shape the whole file:
   dedicated allowance. Absent, we call anonymously — throttling then arrives as HTTP 429,
   which `ProviderHTTP` raises rather than turning into an empty result, so an
   unauthenticated review cannot silently report "no missing work found".
+* **Unauthenticated, the search pool is closed, not slow.** ADR-010a expected anonymous
+  access to be contended and bursty. Measured, `/snippet/search` and `/paper/search`
+  answer 429 to a single cold request while title matching, recommendations and graph
+  traversal answer normally — see `SEARCH_POOL_ENDPOINTS`. Methods on that pool are
+  gated by `search_pool_available` and raise `ProviderEndpointUnavailable` up front,
+  so callers drop the strategy deliberately instead of losing a review to an exception.
 * **Abstracts are missing for a meaningful fraction of records** because of publisher
   licensing. That is why `get_abstract` exists and why `unavailable` is a real outcome.
 
@@ -36,6 +42,7 @@ from app.core.contracts import AbstractSource, SourceRecord
 from app.core.errors import ConfigurationError
 from app.providers.cache import TTL, ResponseCache
 from app.providers.csl import s2_paper_to_csl
+from app.providers.errors import ProviderEndpointUnavailable
 from app.providers.http import ProviderHTTP, ProviderResponse, RetryPolicy
 from app.providers.identity import (
     WorkIdentifiers,
@@ -47,7 +54,7 @@ from app.providers.identity import (
 from app.providers.keys import optional_key
 from app.providers.ratelimit import S2_REQUESTS_PER_SECOND, TokenBucket
 
-__all__ = ["SemanticScholarProvider", "Snippet", "S2_FIELDS"]
+__all__ = ["SemanticScholarProvider", "Snippet", "S2_FIELDS", "S2_RECOMMENDATION_FIELDS"]
 
 GRAPH_BASE = "https://api.semanticscholar.org/graph/v1"
 RECOMMENDATIONS_BASE = "https://api.semanticscholar.org/recommendations/v1"
@@ -75,8 +82,43 @@ S2_FIELDS = ",".join(
     ]
 )
 
+#: The Recommendations API is a *different service* from the Graph API and accepts a
+#: narrower field list: `tldr` is a Graph-only field, and asking for it there is not a
+#: degraded answer but a hard `400 Unrecognized or unsupported fields: [tldr]`.
+#:
+#: That 400 killed the whole review. `s2_recommendations` is the bibliography-seeded
+#: strategy (CP-3), it runs on the first claim, and the exception propagated out of the
+#: streaming runner — so a paper got nine claims extracted, zero verified, and a terminal
+#: error before a single finding. The abstract chain loses nothing by it: a recommended
+#: paper with no `abstract` falls to OpenAlex and then to a Graph-side `tldr` lookup on
+#: the record itself (`abstracts.py`), which is where step three of that chain lives.
+S2_RECOMMENDATION_FIELDS = ",".join(f for f in S2_FIELDS.split(",") if f != "tldr")
+
 #: `/paper/batch` accepts up to 500 ids per call.
 BATCH_LIMIT = 500
+
+#: S2 serves *search and batch* from a different pool than the rest of the Graph API.
+#: With a key that pool is a dedicated ~1 rps. Without one it is shared with every other
+#: unauthenticated client on the internet, and it is not merely slower — it is closed.
+#: Measured 2026-08-16 from an idle machine, six calls per endpoint two seconds apart:
+#:
+#:     /snippet/search             0/6      /paper/search/match          6/6
+#:     /paper/search               0/6      /paper/{id}/references       6/6
+#:     /paper/batch                1/6      /paper/{id}/citations        5/6
+#:     /paper/{id}                 1/6      /recommendations/v1/papers   6/6
+#:
+#: A *single cold request* to `/snippet/search` answers 429, so the usual remedies do not
+#: apply: this is not burstiness a token bucket can smooth, and ADR-010a's "or a lower
+#: request rate" cannot reach zero. Retrying costs four attempts and ~7s of backoff — S2
+#: sends no `Retry-After` — and then raises, which is the failure that killed a whole
+#: review at the first claim.
+#:
+#: The right-hand column is why an unauthenticated review is still worth running: title
+#: matching, recommendations and graph traversal all answer normally, so the arbiter and
+#: two of ADR-005's three candidate strategies are unaffected.
+SEARCH_POOL_ENDPOINTS = frozenset(
+    {"/snippet/search", "/paper/search", "/paper/batch", "/paper/{id}"}
+)
 
 
 class Snippet:
@@ -176,16 +218,55 @@ class SemanticScholarProvider:
 
     @property
     def authenticated(self) -> bool:
-        """Whether calls carry a key. Reported, never branched on."""
+        """Whether calls carry a key. Reported; branched on only via `search_pool_available`."""
         return self._api_key is not None
+
+    @property
+    def search_pool_available(self) -> bool:
+        """Whether `SEARCH_POOL_ENDPOINTS` can be called at all in this regime.
+
+        ADR-010a said `authenticated` is "reported, never branched on", on the premise
+        that anonymous access is "contended and bursty" — slow, but working. Measured,
+        that premise does not hold for the search pool: it is at zero, not thin (see
+        `SEARCH_POOL_ENDPOINTS`). So there is now exactly one thing the request path
+        branches on, and this is it.
+
+        This is a narrow amendment, not a hole. It does not say "return nothing when
+        throttled" — a 429 from any endpoint we *do* call still raises, unchanged. It
+        says which endpoints are worth calling, so a caller can drop a strategy and
+        report that it dropped it, instead of learning the same fact seven seconds later
+        as an exception that takes the whole review with it.
+        """
+        return self.authenticated
 
     async def aclose(self) -> None:
         await self.graph.aclose()
         await self.recommendations.aclose()
 
+    def _require_search_pool(self, endpoint: str) -> None:
+        """Refuse a search-pool call we know has no working answer in this regime."""
+        if self.search_pool_available:
+            return
+        raise ProviderEndpointUnavailable(
+            self.name,
+            endpoint,
+            "no SEMANTIC_SCHOLAR_API_KEY, and unauthenticated this endpoint answers 429 "
+            "to a single cold request. Gate on `search_pool_available` and drop the "
+            "strategy — calling anyway spends four retries to learn what the "
+            "configuration already says.",
+        )
+
     # ------------------------------------------------------------------ Provider protocol
 
     async def search_works(self, query: str, limit: int = 10) -> list[SourceRecord]:
+        """Relevance search. On the search pool, so unauthenticated it is unavailable.
+
+        Nothing in the review or ingest path calls this — the arbiter searches OpenAlex
+        and matches titles through `match_reference` — so the gate costs no capability
+        today. It is here so that wiring it in later fails at the call site instead of
+        producing a review that is quietly one strategy short.
+        """
+        self._require_search_pool("/paper/search")
         response = await self.graph.get_json(
             "/paper/search",
             params={"query": query, "limit": min(limit, 100), "fields": S2_FIELDS},
@@ -221,7 +302,13 @@ class SemanticScholarProvider:
         This is steps one and three of the mandatory fallback chain; `abstracts.py`
         sequences it with OpenAlex in between. `unavailable` is returned, never raised
         and never silently skipped — it is a displayable outcome (ADR-006).
+
+        `/paper/{id}` is on the search pool, so unauthenticated this raises. Note what
+        that does *not* mean: it is not `unavailable`, and `AbstractResolver` must not
+        record it as one. It means this step of the chain cannot run, so OpenAlex becomes
+        the first step that can — which is why the resolver skips rather than catches.
         """
+        self._require_search_pool("/paper/{id}")
         record = await self.store.fetch(source_id)
         if record is None:
             raise KeyError(
@@ -264,7 +351,12 @@ class SemanticScholarProvider:
         `normalize_query` sorts containers, and results are mapped back by paper id
         rather than by position, so a reordered request is a cache hit rather than a
         second identical call.
+
+        On the search pool, so unauthenticated this raises. Its only caller is
+        `snippet_search`, which is gated the same way, so in practice the two are dropped
+        together rather than one discovering the other's absence.
         """
+        self._require_search_pool("/paper/batch")
         refs = await self._resolve_refs(ids)
         if not refs:
             return []
@@ -293,7 +385,12 @@ class SemanticScholarProvider:
 
         Snippet results carry only a corpus id and minimal metadata, so the papers are
         hydrated in a single follow-up `/paper/batch` call rather than one call each.
+
+        Raises `ProviderEndpointUnavailable` when unauthenticated. Callers gate on
+        `search_pool_available` and drop the strategy; reaching here without one is a
+        wiring bug, and it fails here rather than four doomed retries later.
         """
+        self._require_search_pool("/snippet/search")
         response = await self.graph.get_json(
             "/snippet/search",
             params={"query": query, "limit": min(limit, 100)},
@@ -367,7 +464,7 @@ class SemanticScholarProvider:
 
         response = await self.recommendations.post_json(
             "/papers",
-            params={"fields": S2_FIELDS, "limit": min(limit, 500)},
+            params={"fields": S2_RECOMMENDATION_FIELDS, "limit": min(limit, 500)},
             json_body=body,
             ttl_s=TTL.RECOMMENDATIONS,
         )

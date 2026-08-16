@@ -11,8 +11,10 @@ from fastapi.responses import PlainTextResponse
 from app.api.adapters import maybe_await
 from app.api.deps import Services
 from app.api.schemas import (
+    ExportManifest,
     JobAccepted,
     ParseStatus,
+    PlaceholderCount,
     RevertRequest,
     StyleResponse,
     StyleSelection,
@@ -196,7 +198,35 @@ async def get_style(request: Request, doc_id: str) -> StyleResponse:
 async def set_style(request: Request, doc_id: str, payload: StyleSelection) -> StyleResponse:
     svc = services(request)
     result = await maybe_await(svc.require("style").select(doc_id, payload.style_id))
+    await _persist_style(svc, doc_id, payload.style_id)
     return _style_response(doc_id, result)
+
+
+async def _persist_style(svc: Services, doc_id: str, style_id: str) -> None:
+    """Write the user's choice onto the stored document, not only the ingest registry.
+
+    B1's `select()` sets `metadata.style_id` on the in-process parse record. Nothing read
+    that: the exporter loads the head from Postgres, where `style_id` stayed `None`, so a
+    user who picked a style still got "no citation style selected" from the download — and
+    the choice vanished entirely on the next API restart. The pick is a fact about the
+    document, so it belongs on the document.
+
+    Committed as a version rather than patched in place because the IR store is
+    append-only and versions are the audit trail (CP-6): the style a paper was rendered
+    in is exactly the kind of thing that should be revertible and visible in history.
+    """
+    document = await svc.require("documents").get(doc_id, None)
+    if document is None:
+        raise HTTPException(status_code=404, detail=f"document {doc_id!r} does not exist")
+    if document.metadata.style_id == style_id:
+        return
+
+    document.metadata.style_id = style_id
+    # A chosen style is the user's answer, not a measurement; a similarity score
+    # reported next to it would misdescribe where it came from.
+    document.metadata.style_ambiguous = False
+    document.metadata.style_confidence = None
+    await svc.require("documents").put_version(document, parent_version=document.version)
 
 
 def _style_response(doc_id: str, result: dict) -> StyleResponse:
@@ -211,6 +241,59 @@ def _style_response(doc_id: str, result: dict) -> StyleResponse:
     return StyleResponse.model_validate({"doc_id": doc_id, **result})
 
 
+def _export_filename(doc_id: str, version: int) -> str:
+    """One definition, because the manifest promises the name the download delivers."""
+    return f"{doc_id}-v{version}.tex"
+
+
+@router.get("/{doc_id}/export/manifest", response_model=ExportManifest)
+async def export_manifest(
+    request: Request, doc_id: str, version: int | None = None
+) -> ExportManifest:
+    """Describe the export before the user commits to it.
+
+    Counted off the IR itself rather than by rendering: the manifest is what the export
+    page loads on arrival, and rendering a whole paper through Pandoc to fill in three
+    numbers would make the page slow and would fail for the very documents that most need
+    the page to explain why (no style chosen yet).
+    """
+    svc = services(request)
+    document = await load_document(svc, doc_id, version)
+
+    placeholders: dict[str, int] = {"figure": 0, "table": 0, "equation": 0}
+    source_ids: set[str] = set()
+    for section in document.sections:
+        for block in section.blocks:
+            if block.type in placeholders:
+                placeholders[block.type] += 1
+            for span in block.spans:
+                for anchor in span.citation_anchors:
+                    source_ids.update(anchor.source_ids)
+
+    style_id = document.metadata.style_id
+    blocked_reason = None
+    if not style_id:
+        blocked_reason = (
+            "No citation style has been chosen for this document, so the bibliography "
+            "cannot be rendered. Style detection scored two candidates too close to call "
+            "and will not guess — choose one on the parse screen, then export."
+        )
+
+    return ExportManifest(
+        doc_id=doc_id,
+        version=document.version,
+        filename=_export_filename(doc_id, document.version),
+        placeholder_blocks=[
+            PlaceholderCount(type=kind, count=count)  # type: ignore[arg-type]
+            for kind, count in placeholders.items()
+        ],
+        bibliography_entries=len(source_ids),
+        style_id=style_id,
+        exportable=blocked_reason is None,
+        blocked_reason=blocked_reason,
+    )
+
+
 @router.get("/{doc_id}/export.tex", response_class=PlainTextResponse)
 async def export_latex(request: Request, doc_id: str, version: int | None = None) -> PlainTextResponse:
     svc = services(request)
@@ -219,7 +302,11 @@ async def export_latex(request: Request, doc_id: str, version: int | None = None
     return PlainTextResponse(
         latex,
         media_type="application/x-tex",
-        headers={"Content-Disposition": f'attachment; filename="{doc_id}-v{document.version}.tex"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{_export_filename(doc_id, document.version)}"'
+            )
+        },
     )
 
 
