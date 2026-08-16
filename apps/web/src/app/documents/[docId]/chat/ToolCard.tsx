@@ -11,6 +11,7 @@ import { DocumentStructure } from '@/components/DocumentStructure';
 import { Plate } from '@/components/Plate';
 import { Seal } from '@/components/Seal';
 import { RenderedCitation } from '@/components/RenderedCitation';
+import { browserUrl } from '@/lib/api/client';
 import type { SourceRecord } from '@/lib/contracts';
 import type { ToolPayload } from '@/lib/api/types';
 
@@ -161,8 +162,17 @@ export function ToolCard({
               </span>
             )}
           </p>
+          {/*
+            Resolved through `browserUrl`, exactly as `conv.stream` is. The API hands back
+            a path (`/api/documents/{id}/export.tex?version=2`), and in production the page
+            is served from a different origin than the API — so a bare path resolves against
+            the *web* origin, which serves no such route, and the download 404s while the
+            export itself was fine. The `download` attribute is ignored cross-origin, which
+            is harmless here: the export route sets `Content-Disposition: attachment` with
+            the same filename, so the browser saves it either way.
+          */}
           <a
-            href={payload.data.download_url}
+            href={browserUrl(payload.data.download_url)}
             download={payload.data.filename}
             className="mt-5 inline-flex items-center gap-3 border border-cobalt/45 bg-leaf px-6 py-3 font-ui text-xs text-cobalt transition-colors duration-ink ease-ink hover:bg-cobalt/[0.06]"
           >

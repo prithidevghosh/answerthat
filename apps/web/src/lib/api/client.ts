@@ -193,6 +193,10 @@ export function apiBase(): string {
  */
 export function browserUrl(pathFromApi: string): string {
   if (/^https?:\/\//i.test(pathFromApi)) return pathFromApi;
+  // A fragment is not a path, and joining it to an origin produces a URL that points at
+  // the API and means nothing. Returned unchanged so the fixture client's inert
+  // `#fixture-export` link stays inert instead of pointing a download at a real host.
+  if (pathFromApi.startsWith('#')) return pathFromApi;
   const path = pathFromApi.startsWith('/') ? pathFromApi : `/${pathFromApi}`;
   return path === API_PREFIX || path.startsWith(`${API_PREFIX}/`)
     ? `${PUBLIC_ORIGIN}${path}`

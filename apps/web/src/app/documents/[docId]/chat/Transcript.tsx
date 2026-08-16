@@ -2,6 +2,7 @@
 
 import { Fleuron } from '@/components/Ornament';
 import { Seal } from '@/components/Seal';
+import { AgentProse } from './AgentProse';
 import { ToolLine } from './ToolLine';
 import { ToolCard } from './ToolCard';
 import { ParseProgressCard, ReviewProgressCard } from './ProgressCards';
@@ -125,14 +126,15 @@ function Turn({
   return (
     <div className="animate-rise-in">
       {turn.content && (
-        <p
+        <div
           // aria-live on the streaming region only. On the whole log, a screen
           // reader re-reads the entire conversation on every delta.
           aria-live={announced ? 'polite' : undefined}
-          className="measure whitespace-pre-wrap font-body text-base leading-[1.68] text-primary"
         >
-          {turn.content}
-        </p>
+          {/* The model writes Markdown. Rendering it raw put literal `###` and
+              backticks in the body text of the page — see AgentProse. */}
+          <AgentProse text={turn.content} />
+        </div>
       )}
 
       {turn.toolCalls.length > 0 && (
