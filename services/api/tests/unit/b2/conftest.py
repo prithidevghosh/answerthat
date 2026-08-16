@@ -1,9 +1,12 @@
 """Fixtures for B2's unit tests.
 
 Everything here builds a provider against a *mocked transport*, never a relaxed provider.
-A real key is required at construction (HR-2), so the tests pass a fake one and stub the
-wire — which is the only sanctioned way to run without credentials, and deliberately
-harder than adding an anonymous mode would have been.
+OpenAlex and Crossref require credentials at construction (HR-2), so the tests pass fake
+ones and stub the wire — the only sanctioned way to run without credentials, and
+deliberately harder than adding an anonymous mode would have been. S2's key is optional
+(ADR-010a) but supplied here anyway, so that the authenticated path stays the one under
+test by default; `test_semantic_scholar.py` builds its own keyless provider for the
+anonymous cases.
 
 Payloads and helpers are exposed as fixtures rather than importable constants so that the
 test package needs no `__init__.py` and no sibling imports.
@@ -29,11 +32,11 @@ FAKE_MAILTO = "tests@answerthat.local"
 
 @pytest.fixture(autouse=True)
 def fake_credentials(monkeypatch) -> None:
-    """Every required key present, all of them fake. HR-2 / ADR-010.
+    """Every key present, all of them fake. HR-2 / ADR-010.
 
     Thresholds are read from `Settings` at construction — `CITABILITY_MIN`, `RERANK_KEEP`,
-    `VERIFY_KEEP` (ADR-024) — and `Settings` refuses to exist without all three keys. So
-    the suite supplies keys rather than relaxing the check, which is the same trade the
+    `VERIFY_KEEP` (ADR-024) — and `Settings` refuses to exist without the required keys.
+    So the suite supplies keys rather than relaxing the check, which is the same trade the
     provider tests make with their stubbed transports: fake the credential, never the
     enforcement.
 

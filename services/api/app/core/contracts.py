@@ -159,7 +159,10 @@ class KernelVerdict(BaseModel):
 
 # ---------- providers ----------
 class Provider(Protocol):
-    """Implementations MUST raise MissingAPIKeyError at construction if the key is absent. HR-2."""
+    """Implementations whose API degrades silently without credentials MUST raise
+    MissingAPIKeyError at construction when theirs is absent (HR-2). One whose API
+    throttles with an error status we already raise on MAY run unauthenticated —
+    see ADR-010a, and read it before adding a second exception."""
     async def search_works(self, query: str, limit: int = 10) -> list[SourceRecord]: ...
     async def match_reference(self, title: str, year: int | None = None) -> SourceRecord | None: ...
     async def get_abstract(self, source_id: str) -> tuple[str | None, AbstractSource]: ...

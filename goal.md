@@ -32,11 +32,16 @@ that only a provider adapter (`app/providers/*`) may write to, and only from a r
 Any code path where a model's output becomes a citation without passing through a provider adapter
 is a defect of the highest severity.
 
-**HR-2 — Fail fast on missing credentials. No silent degradation.**
-`SEMANTIC_SCHOLAR_API_KEY` and `OPENALEX_API_KEY` are **required**. The application must raise on
-startup if either is absent or empty. There is no anonymous mode, no degraded banner, no default
-route. A provider that cannot authenticate must raise `MissingAPIKeyError`, never return empty
-results that read like "nothing found". *Rationale in `decision.md` ADR-010.*
+**HR-2 — Fail fast on credentials whose absence degrades silently.**
+`OPENALEX_API_KEY`, `OPENALEX_MAILTO`, and `OPENAI_API_KEY` are **required**. The application must
+raise on startup if any is absent or empty. For these there is no anonymous mode, no degraded
+banner, no default route: a provider that cannot authenticate must raise `MissingAPIKeyError`, never
+return empty results that read like "nothing found".
+
+The rule is about the *failure mode*, not the credential. `SEMANTIC_SCHOLAR_API_KEY` is **optional**
+because S2 throttles with an HTTP 429 that we already raise on, so an unauthenticated review cannot
+under-report silently. Adding a second exception requires proving the same property.
+*Rationale in `decision.md` ADR-010, ADR-010a, ADR-015.*
 
 **HR-3 — Failures are surfaced, never swallowed.**
 Unparseable references, unresolved references, orphaned in-text markers, missing abstracts,
@@ -74,15 +79,17 @@ agent's path is a protocol violation — file an Interface Request in `memory.md
 │       ├── app/
 │       │   ├── core/                 ◄── FROZEN. Materialized by B1 from Appendix A.
 │       │   │   ├── contracts.py          Changes require an ADR in decision.md.
-│       │   │   ├── config.py
+│       │   │   ├── config.py            all keys + all thresholds (ADR-024)
+│       │   │   ├── llm.py               OpenAI client, structured output,
+│       │   │   │                        record/replay, embeddings (ADR-015/016/018)
 │       │   │   ├── errors.py
 │       │   │   └── db.py
-│       │   ├── ir/                   ◄── OWNER: B1
-│       │   ├── parsing/              ◄── OWNER: B1
+│       │   ├── ir/                   ◄── OWNER: B1   (tables: ir_*)
+│       │   ├── parsing/              ◄── OWNER: B1   (+ parsing/prompts/)
 │       │   ├── export/               ◄── OWNER: B1
-│       │   ├── providers/            ◄── OWNER: B2
-│       │   ├── review/               ◄── OWNER: B2
-│       │   ├── agent/                ◄── OWNER: B3
+│       │   ├── providers/            ◄── OWNER: B2   (tables: src_*)
+│       │   ├── review/               ◄── OWNER: B2   (+ review/prompts/)
+│       │   ├── agent/                ◄── OWNER: B3   (+ agent/prompts/, tables: agent_*)
 │       │   └── api/                  ◄── OWNER: B3
 │       └── tests/
 │           ├── unit/<owner>/         ◄── each agent owns its own unit tests
@@ -106,8 +113,14 @@ An agent marks a checkpoint complete only when **every** acceptance criterion is
 
 ### CP-1 — Skeleton round trip *(B1)*
 - [ ] `docker compose up` starts api, web, grobid, postgres, redis
-- [ ] Missing `SEMANTIC_SCHOLAR_API_KEY` or `OPENALEX_API_KEY` **aborts startup with a clear error** (HR-2)
+- [ ] Missing **either** of `OPENALEX_API_KEY`, `OPENAI_API_KEY` **aborts startup with a clear error** (HR-2)
+- [ ] A missing `SEMANTIC_SCHOLAR_API_KEY` **starts, logs the unauthenticated regime, and still raises on a 429** (ADR-010a)
 - [ ] `app/core/` matches Appendix A exactly
+- [ ] `app/core/llm.py`: OpenAI client with per-role model routing (ADR-015), mandatory JSON-Schema structured output, `embed()` at 512 dims (ADR-016), and `LLM_MODE=record|replay|live` where **replay raises on a cache miss** (ADR-018)
+- [ ] Every model ID and every threshold lives in `config.py` and **nowhere else** (ADR-015, ADR-024)
+- [ ] Per-document token budget enforced; exceeding it raises and surfaces
+- [ ] `anchor_fingerprints` side table exists; no vector is stored inline in the IR (ADR-017)
+- [ ] Uploads written to `/data/uploads/{doc_id}.pdf`; `jobs` table with status/error/progress (ADR-022)
 - [ ] PDF upload → GROBID → TEI → Document IR persisted with a version number
 - [ ] IR → LaTeX export renders through Pandoc without error
 - [ ] Round trip preserves: title, all section headings and order, paragraph count ±0, every in-text anchor
@@ -157,6 +170,8 @@ An agent marks a checkpoint complete only when **every** acceptance criterion is
 - [ ] Anchors below the reattachment threshold produce a user-facing decision, never a deletion
 - [ ] REJECT returns the reason to the planner, max 2 retries, then surfaces to the user
 - [ ] Every approved change set commits a new IR version; every version is revertible
+- [ ] **Optimistic locking:** commands and approvals carry `base_version`; a moved head fails the commit and triggers a re-plan rather than a silent overwrite (ADR-021)
+- [ ] Reattachment uses `LLMClient.embed()` fingerprints from the side table; `REATTACH_ACCEPT` / `REATTACH_FLAG_FLOOR` read from config, never inlined
 
 ### CP-7 — Frontend *(F1)*
 - [ ] First screen is the upload. No marketing landing page.
@@ -173,6 +188,9 @@ An agent marks a checkpoint complete only when **every** acceptance criterion is
 - [ ] Parsing metrics reported: reference recall, field precision, arbiter resolution rate, orphan count, mean round-trip style similarity
 - [ ] Kernel adversarial suite: fake `source_id`, dropped anchor, unsupported new claim — each asserted REJECT
 - [ ] Recorded provider fixtures make review and edit flows deterministic in CI
+- [ ] `LLM_MODE=replay` recordings committed; CI runs with **zero live LLM or provider calls**, and a cache miss fails the build rather than hitting the network (ADR-018)
+- [ ] Threshold sweep against the golden set for `ARBITER_ACCEPT`, `REPAIR_TRIGGER`, `REATTACH_ACCEPT` — report the chosen values with evidence (ADR-024)
+- [ ] A killed worker mid-review surfaces as a failed job in the UI, not as an empty result (ADR-022)
 - [ ] E2E: upload → parse → review → edit → approve → export
 - [ ] **Honesty audit** — see the test engineer brief. This gates release.
 
@@ -241,7 +259,10 @@ class CitationAnchor(BaseModel):
     original_marker_text: str | None = None
     provenance_kind: Literal["parsed", "agent_added"] = "parsed"
     confidence: float = 1.0
-    context_fingerprint: list[float] | None = None # embedding of host sentence, for reattachment
+    fingerprint_id: str | None = None              # FK → anchor_fingerprints table (ADR-017).
+                                                   # Vectors are NEVER stored inline: they would
+                                                   # duplicate per version and make structural
+                                                   # diffs unreadable.
     locator: str | None = None
     prefix: str | None = None
 
@@ -358,11 +379,47 @@ class KernelVerdict(BaseModel):
 
 # ---------- providers ----------
 class Provider(Protocol):
-    """Implementations MUST raise MissingAPIKeyError at construction if the key is absent. HR-2."""
+    """Implementations whose API degrades silently without credentials MUST raise
+    MissingAPIKeyError at construction when theirs is absent (HR-2). One whose API
+    throttles with an error status we already raise on MAY run unauthenticated —
+    see ADR-010a, and read it before adding a second exception."""
     async def search_works(self, query: str, limit: int = 10) -> list[SourceRecord]: ...
     async def match_reference(self, title: str, year: int | None = None) -> SourceRecord | None: ...
     async def get_abstract(self, source_id: str) -> tuple[str | None, AbstractSource]: ...
     async def batch_hydrate(self, ids: list[str]) -> list[SourceRecord]: ...
+
+# ---------- LLM (ADR-015 / 016 / 018) ----------
+class LLMRole(str, Enum):
+    """Model is chosen per ROLE, never globally. IDs pinned in config.py — no model
+    string appears anywhere else in the codebase."""
+    REPAIR = "repair"                  # gpt-5.4-mini  — reference segment-and-label
+    CLAIM_EXTRACTION = "claim_extraction"  # gpt-5.4
+    RERANK = "rerank"                  # gpt-5.4-mini  — after the embedding prefilter
+    VERIFY = "verify"                  # gpt-5.5       — accuracy-critical, do not economise
+    PLAN = "plan"                      # gpt-5.5
+    TRANSFORM = "transform"            # gpt-5.4       — rewriting the user's prose
+
+class LLMClient(Protocol):
+    """The ONLY path to OpenAI. Structured output is mandatory for every data-returning
+    call — JSON Schema, not prompt-and-parse. Honours LLM_MODE=record|replay|live;
+    in replay a cache miss RAISES rather than calling the API (ADR-018)."""
+    async def complete(
+        self, role: LLMRole, prompt: str, schema: dict, *, system: str | None = None
+    ) -> dict: ...
+    async def embed(self, texts: list[str]) -> list[list[float]]: ...   # 3-small @ 512 dims
+
+class JobStatus(str, Enum):
+    QUEUED = "queued"; RUNNING = "running"; SUCCEEDED = "succeeded"; FAILED = "failed"
+
+class Job(BaseModel):
+    """A crashed worker is a FAILURE and must be visible. A UI streaming nothing forever
+    reads as 'no findings' — the same false negative as ADR-010. HR-3."""
+    job_id: str
+    kind: Literal["ingest", "review"]
+    status: JobStatus
+    progress_current: int = 0
+    progress_total: int = 0
+    error: str | None = None
 ```
 
 ### Kernel rules (normative)

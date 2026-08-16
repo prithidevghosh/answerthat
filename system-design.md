@@ -17,12 +17,19 @@
 | Export fidelity | Text + citations exact; figures/tables/equations become visible placeholders |
 | Stack | FastAPI backend, Next.js frontend |
 
-**API keys are required, not optional.** `SEMANTIC_SCHOLAR_API_KEY` and `OPENALEX_API_KEY` must both
-be present or **the application refuses to start**. There is no anonymous mode and no degraded
-banner. Rationale: under anonymous limits searches do not error, they return thin or empty results,
-which the review pipeline would faithfully report as *"no missing work found"* — a false negative
-dressed as a clean bill of health, and indistinguishable downstream from a genuine empty result.
-The only safe design is to make the misconfiguration impossible to run.
+**Credentials are required wherever their absence would fail quietly.** `OPENALEX_API_KEY` (with
+`OPENALEX_MAILTO`) and `OPENAI_API_KEY` must be present or **the application refuses to start** —
+no anonymous mode, no degraded banner. Rationale: under anonymous OpenAlex limits searches do not
+error, they return thin or empty results, which the review pipeline would faithfully report as
+*"no missing work found"* — a false negative dressed as a clean bill of health, and
+indistinguishable downstream from a genuine empty result. The only safe design is to make that
+misconfiguration impossible to run.
+
+`SEMANTIC_SCHOLAR_API_KEY` is **optional** (ADR-010a). S2 reports throttling as an HTTP 429, which
+the provider HTTP layer retries and then raises as `ProviderRateLimited` rather than converting to
+an empty result — so the false negative above cannot occur, and the startup gate bought nothing.
+Without a key S2 is called from the shared unauthenticated pool: slower and burstier, never
+silently thinner. Startup logs which providers are running unauthenticated.
 
 ---
 

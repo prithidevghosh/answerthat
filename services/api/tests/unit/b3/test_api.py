@@ -59,6 +59,34 @@ class StubReview:
             raise RuntimeError("Semantic Scholar returned 429")
 
 
+class StubStyle:
+    """B1's payload shape, reproduced exactly — including the absent `doc_id`.
+
+    That absence is the whole point. A stub that helpfully returned one would agree with
+    `StyleResponse` and prove nothing about the route, which is how a 500 on every
+    successful style detection survived a passing suite.
+    """
+
+    def detect(self, doc_id: str) -> dict:
+        return {
+            "style_id": "apa",
+            "score": 0.91,
+            "similarity": 0.91,
+            "ambiguous": False,
+            "chosen_by_user": False,
+            "shortlist": [{"style_id": "apa", "family": "author-date"}],
+        }
+
+    def select(self, doc_id: str, style_id: str) -> dict:
+        return {
+            "style_id": style_id,
+            "score": None,
+            "ambiguous": False,
+            "chosen_by_user": True,
+            "shortlist": [{"style_id": style_id, "family": "author-date"}],
+        }
+
+
 def build_client(base_document, sources, *, planner_responses=None, text_output=CLEAN_REWRITE,
                  review=None) -> tuple[TestClient, Services, InMemoryDocumentStore]:
     documents = InMemoryDocumentStore()
@@ -76,6 +104,7 @@ def build_client(base_document, sources, *, planner_responses=None, text_output=
         text_model=ScriptedTextModel(text_output),
         structured_model=ScriptedPlanner(planner_responses or [SHORTEN_PLAN]),
         fingerprints=FakeFingerprintStore(),
+        style=StubStyle(),
         band=TEST_BAND,
         settings=None,
     )
@@ -93,11 +122,11 @@ def test_a_missing_api_key_aborts_startup_rather_than_degrading(monkeypatch):
     import app.api.main as main
 
     def explode() -> Services:
-        raise MissingAPIKeyError("SEMANTIC_SCHOLAR_API_KEY is required and was not set")
+        raise MissingAPIKeyError("OPENALEX_API_KEY is required and was not set")
 
     monkeypatch.setattr(main, "build_services", explode)
 
-    with pytest.raises(MissingAPIKeyError, match="SEMANTIC_SCHOLAR_API_KEY"):
+    with pytest.raises(MissingAPIKeyError, match="OPENALEX_API_KEY"):
         main.create_app()
 
 
@@ -129,11 +158,33 @@ def test_an_unbound_collaborator_is_a_503_that_names_it(base_document, sources):
     assert "memory.md" in body["detail"]
 
 
+def test_the_style_routes_answer_rather_than_500(base_document, sources):
+    """The success path, which had no test at all.
+
+    B1's payload has no `doc_id` and `StyleResponse` requires one, so
+    `StyleResponse.model_validate(result)` raised a pydantic `ValidationError` and both
+    routes returned 500 on every real detection. The route supplies it from the path.
+    """
+    client, _services, _documents = build_client(base_document, sources)
+    doc_id = base_document.doc_id
+
+    detected = client.get(f"/api/documents/{doc_id}/style")
+    assert detected.status_code == 200, detected.text
+    assert detected.json()["doc_id"] == doc_id
+    assert detected.json()["style_id"] == "apa"
+
+    chosen = client.put(f"/api/documents/{doc_id}/style", json={"style_id": "ieee"})
+    assert chosen.status_code == 200, chosen.text
+    assert chosen.json() == {**chosen.json(), "doc_id": doc_id, "style_id": "ieee"}
+
+
 def test_health_reports_what_is_bound(base_document, sources):
     client, _services, _documents = build_client(base_document, sources)
     body = client.get("/api/health").json()
     assert body["bound"]["documents"] is True
-    assert "style" in body["unbound"]
+    # `ingest` as the example of an unbound collaborator, not `style`: these tests now
+    # bind a style service in order to exercise the style routes at all.
+    assert "ingest" in body["unbound"]
     assert "never a silent fallback" in body["note"]
 
 

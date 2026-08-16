@@ -63,7 +63,8 @@ evidence (test output, command output, screenshot path) into §6. "It works" is 
 ## 2. Environment and commands
 
 ```bash
-cp .env.example .env          # then fill in both keys — the app will not start without them
+cp .env.example .env          # fill in OPENALEX_API_KEY, OPENALEX_MAILTO, OPENAI_API_KEY;
+                              # the app will not start without them. S2's key is optional.
 docker compose up -d          # api, web, grobid, postgres, redis
 docker compose logs -f api
 
@@ -77,16 +78,16 @@ cd apps/web && pnpm dev
 cd apps/web && pnpm build && pnpm lint
 ```
 
-Required env vars — **the app raises on startup if either is missing (HR-2 / ADR-010):**
+Env vars — **the app raises on startup if a required one is missing (HR-2 / ADR-010):**
 
-| Var | Where to get it |
-|---|---|
-| `SEMANTIC_SCHOLAR_API_KEY` | free, request at semanticscholar.org/product/api |
-| `OPENALEX_API_KEY` | free, register at openalex.org |
-| `OPENALEX_MAILTO` | your contact email — required for the polite pool |
-| `OPENAI_API_KEY` | **all** LLM and embedding calls (ADR-015, ADR-016) |
-| `GROBID_URL` | defaults to `http://grobid:8070` in compose |
-| `LLM_MODE` | `live` \| `record` \| `replay`. CI runs `replay` (ADR-018) |
+| Var | Required? | Where to get it |
+|---|---|---|
+| `SEMANTIC_SCHOLAR_API_KEY` | **optional** (ADR-010a) | blank ⇒ shared unauthenticated pool. Safe because S2 throttles with a 429 we raise on, not with thin results. S2 has issued no new keys to free-domain addresses or third-party apps since 2024-09 |
+| `OPENALEX_API_KEY` | required | free, register at openalex.org |
+| `OPENALEX_MAILTO` | required | your contact email — the polite pool; outside it, throttling looks like sparse results |
+| `OPENAI_API_KEY` | required | **all** LLM and embedding calls (ADR-015, ADR-016) |
+| `GROBID_URL` | optional | defaults to `http://grobid:8070` in compose |
+| `LLM_MODE` | optional | `live` \| `record` \| `replay`. CI runs `replay` (ADR-018) |
 
 **Models are chosen per role, not globally (ADR-015).** Every model ID is pinned in
 `app/core/config.py` and appears **nowhere else**:

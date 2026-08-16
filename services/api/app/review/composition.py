@@ -70,9 +70,10 @@ class ProviderBundle:
         self.cache = cache or PostgresResponseCache()
         self.store = store or PostgresSourceStore()
 
-        # Each constructor raises MissingAPIKeyError if its credential is absent. There
-        # is deliberately no try/except around them: a bundle that came up with two of
-        # three adapters would produce a review that looks complete (HR-2 / ADR-010).
+        # OpenAlex and Crossref raise MissingAPIKeyError if their credential is absent;
+        # S2 accepts an empty key and calls anonymously (ADR-010a). There is deliberately
+        # no try/except around any of them: a bundle that came up with two of three
+        # adapters would produce a review that looks complete (HR-2 / ADR-010).
         self.semantic_scholar = SemanticScholarProvider(
             api_key=settings.semantic_scholar_api_key, cache=self.cache, store=self.store
         )

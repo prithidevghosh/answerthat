@@ -1,9 +1,13 @@
-"""HR-2 / ADR-010 — credentials are required, and their absence raises.
+"""HR-2 / ADR-010 / ADR-010a — credentials are required wherever absence fails quietly.
 
-These tests exist to make softening this expensive. If one of them starts failing
-because a provider grew an anonymous path, the correct response is to delete the path,
-not the test. The failure mode being prevented is not a crash — it is a *review that
-reports "no missing work found" because it was silently throttled*.
+These tests exist to make softening this expensive. If one of them starts failing because
+a provider grew an anonymous path, the correct response is to delete the path, not the
+test. The failure mode being prevented is not a crash — it is a *review that reports "no
+missing work found" because it was silently throttled*.
+
+ADR-010a narrowed the rule from "every provider needs a key" to "every provider whose
+throttling is invisible needs a key". `optional_key` is the other half, and it is tested
+here alongside `require_key` so the two stay visibly distinct.
 """
 
 from __future__ import annotations
@@ -11,24 +15,35 @@ from __future__ import annotations
 import pytest
 
 from app.core.contracts import MissingAPIKeyError
-from app.providers.keys import redact, require_key, require_mailto
+from app.providers.keys import optional_key, redact, require_key, require_mailto
 
 
 @pytest.mark.parametrize("absent", [None, "", "   ", "\t\n"])
 def test_require_key_raises_when_absent_or_blank(absent: str | None) -> None:
     with pytest.raises(MissingAPIKeyError) as exc:
-        require_key(absent, env_var="SEMANTIC_SCHOLAR_API_KEY", provider="SemanticScholarProvider")
+        require_key(absent, env_var="OPENALEX_API_KEY", provider="OpenAlexProvider")
     message = str(exc.value)
-    assert "SEMANTIC_SCHOLAR_API_KEY" in message
-    assert "SemanticScholarProvider" in message
+    assert "OPENALEX_API_KEY" in message
+    assert "OpenAlexProvider" in message
     # The operator must be told where to get it, or the refusal is a dead end.
-    assert "semanticscholar.org" in message
+    assert "openalex.org" in message
     # And why it is not merely a warning.
     assert "no missing work found" in message
 
 
 def test_require_key_returns_stripped_value() -> None:
     assert require_key("  abc123 ", env_var="OPENALEX_API_KEY", provider="OpenAlexProvider") == "abc123"
+
+
+@pytest.mark.parametrize("absent", [None, "", "   ", "\t\n"])
+def test_optional_key_reports_absence_as_none_rather_than_raising(absent: str | None) -> None:
+    """ADR-010a. Whitespace is absence here too — `KEY=" "` means unauthenticated, not a
+    one-space credential that would be sent as a header and 403."""
+    assert optional_key(absent) is None
+
+
+def test_optional_key_returns_stripped_value_when_present() -> None:
+    assert optional_key("  abc123 ") == "abc123"
 
 
 @pytest.mark.parametrize("bad", [None, "", "   ", "not-an-email"])

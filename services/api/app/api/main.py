@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +23,9 @@ from app.agent.versioning import ApprovalError, VersionConflict
 from app.api.deps import DependencyUnavailable, Services, build_services
 from app.api.routes import documents, edits, jobs, review
 from app.api.schemas import VersionConflictDetail
+from app.core.config import unauthenticated_providers
 from app.core.contracts import KernelRejection, MissingAPIKeyError, ParseFailure
+from app.core.db import create_all, dispose_engine
 from app.core.errors import IRVersionConflict
 
 log = logging.getLogger("app.api")
@@ -30,10 +34,15 @@ API_TITLE = "answerthat API"
 
 
 def create_app(services: Services | None = None) -> FastAPI:
+    # Only the process that wired its own collaborators owns the database. An app handed
+    # pre-built services (tests, embedding hosts) gets no schema pass and no engine
+    # disposal: it may have been given in-memory stores precisely because there is no
+    # Postgres to reach, and connecting to one anyway would fail for the wrong reason.
+    owns_database = services is None
     if services is None:
         services = _boot()
 
-    app = FastAPI(title=API_TITLE, version="1.0.0")
+    app = FastAPI(title=API_TITLE, version="1.0.0", lifespan=_lifespan_for(owns_database))
     app.state.services = services
 
     _install_cors(app, services)
@@ -69,16 +78,76 @@ def create_app(services: Services | None = None) -> FastAPI:
     return app
 
 
+def _lifespan_for(owns_database: bool):
+    """Create the schema before the first request, and let a failure stop the boot.
+
+    There is no Alembic in v1 (ADR-020), so `create_all()` at startup *is* the migration
+    story — and nothing was calling it, which is why every write landed on a table that
+    did not exist. `create_all()` is idempotent: it issues CREATE TABLE only for what is
+    missing, so this is safe on every restart.
+
+    Deliberately unguarded, for the same reason `_boot()` is. A database the API cannot
+    reach or cannot create its tables in is not a degraded mode — it is an API that will
+    500 on every upload while reporting itself healthy.
+    """
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if owns_database:
+            _import_table_modules()
+            await create_all()
+            log.info("database schema is present")
+        yield
+        if owns_database:
+            await dispose_engine()
+
+    return lifespan
+
+
+# Every module that declares a table. A table whose module was never imported is absent
+# from `Base.metadata` and is silently not created (memory.md §4). `build_services()` has
+# imported all of these by the time the lifespan runs; naming them here is what keeps the
+# schema complete if the wiring ever stops binding one of them.
+_TABLE_MODULES = (
+    "app.api.jobstore",
+    "app.ir.store",
+    "app.ir.fingerprints",
+    "app.providers.cache",
+    "app.providers.source_store",
+)
+
+
+def _import_table_modules() -> None:
+    """ImportError is tolerated for the same reason `deps.py` tolerates it: during a
+    parallel build a package may not have landed yet, and that is already reported there
+    as an unbound collaborator. Any other exception is a real fault and propagates."""
+    import importlib  # noqa: PLC0415
+
+    for module_path in _TABLE_MODULES:
+        try:
+            importlib.import_module(module_path)
+        except ImportError as exc:
+            log.warning("no tables registered from %s: %s", module_path, exc)
+
+
 def _boot() -> Services:
     """Startup. Deliberately unguarded — see the module docstring."""
     try:
-        return build_services()
+        services = build_services()
     except MissingAPIKeyError as exc:
         # Not swallowed: re-raised after making the reason unmissable in the logs. The
         # process must not come up.
         log.critical("startup aborted — %s", exc)
         print(f"\nCONFIGURATION ERROR: {exc}\n", file=sys.stderr)
         raise
+
+    # Not a warning about a broken configuration — a statement about a supported one.
+    # ADR-010a permits running S2 unauthenticated precisely because throttling there is a
+    # 429 we raise on; what HR-3 does not permit is leaving the operator to guess which
+    # regime they are in.
+    for name in unauthenticated_providers():
+        log.info("%s not set — using the shared unauthenticated pool (ADR-010a)", name)
+    return services
 
 
 def _install_cors(app: FastAPI, services: Services) -> None:
@@ -110,7 +179,10 @@ def _install_error_handlers(app: FastAPI) -> None:
             content={
                 "error": "configuration_error",
                 "detail": str(exc),
-                "hint": "Set the required keys and restart. There is no anonymous mode (ADR-010).",
+                "hint": (
+                    "Set the required keys and restart. These have no anonymous mode "
+                    "(ADR-010); SEMANTIC_SCHOLAR_API_KEY is not one of them (ADR-010a)."
+                ),
             },
         )
 

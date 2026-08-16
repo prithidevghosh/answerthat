@@ -13,7 +13,13 @@ pipeline's candidate generation depends on (ADR-005):
 Operating constraints that shape the whole file:
 
 * **~1 request/second.** Everything batches or queues. `/paper/batch` hydrates up to 500
-  ids in one call, so nothing here loops over ids.
+  ids in one call, so nothing here loops over ids. With a key that 1 RPS is ours; without
+  one we are in a pool shared with every other unauthenticated client, so the same budget
+  is nominally far larger but contended and bursty. Either way the answer is to batch.
+* **The key is optional (ADR-010a).** Present, it is sent as `x-api-key` and buys the
+  dedicated allowance. Absent, we call anonymously — throttling then arrives as HTTP 429,
+  which `ProviderHTTP` raises rather than turning into an empty result, so an
+  unauthenticated review cannot silently report "no missing work found".
 * **Abstracts are missing for a meaningful fraction of records** because of publisher
   licensing. That is why `get_abstract` exists and why `unavailable` is a real outcome.
 
@@ -38,7 +44,7 @@ from app.providers.identity import (
     mint_source_id,
     normalize_doi,
 )
-from app.providers.keys import require_key
+from app.providers.keys import optional_key
 from app.providers.ratelimit import S2_REQUESTS_PER_SECOND, TokenBucket
 
 __all__ = ["SemanticScholarProvider", "Snippet", "S2_FIELDS"]
@@ -106,8 +112,11 @@ class Snippet:
 class SemanticScholarProvider:
     """Adapter for the Semantic Scholar Academic Graph and Recommendations APIs.
 
-    Raises `MissingAPIKeyError` at construction if the key is absent (HR-2). There is no
-    anonymous constructor argument to find, because there is no anonymous mode.
+    Constructs with or without a key (ADR-010a). There is still no anonymous constructor
+    argument to find — authentication is not a mode a caller selects, it follows from
+    whether `api_key` holds a credential. `authenticated` reports which regime we are in
+    so that startup and `/health` can say so out loud; nothing in the request path
+    branches on it.
     """
 
     name = "semantic_scholar"
@@ -123,10 +132,10 @@ class SemanticScholarProvider:
         client: Any = None,
         recommendations_client: Any = None,
     ) -> None:
-        # First statement in the constructor, deliberately. HR-2 / ADR-010.
-        self._api_key = require_key(
-            api_key, env_var="SEMANTIC_SCHOLAR_API_KEY", provider="SemanticScholarProvider"
-        )
+        # ADR-010a: optional. S2 answers a throttled anonymous call with 429, which
+        # `ProviderHTTP` raises — the failure is loud, so a startup gate would buy no
+        # safety and would lock out operators S2 will not issue a key to.
+        self._api_key = optional_key(api_key)
         if store is None:
             raise ConfigurationError(
                 "SemanticScholarProvider requires a source_store: every record it returns "
@@ -137,7 +146,9 @@ class SemanticScholarProvider:
         # One limiter shared by both base URLs: the ~1 rps allowance is per key, not per
         # host, and two independent buckets would quietly double our request rate.
         self.limiter = limiter or TokenBucket(rate_per_sec, name="semantic_scholar")
-        headers = {"x-api-key": self._api_key}
+        # Omitted entirely when unauthenticated. An `x-api-key: ""` header is not the same
+        # request as no header at all, and sending one is a 403 waiting to happen.
+        headers = {"x-api-key": self._api_key} if self._api_key else {}
         user_agent = "answerthat/0.1 (grounded peer review; +https://github.com/answerthat)"
 
         self.graph = ProviderHTTP(
@@ -162,6 +173,11 @@ class SemanticScholarProvider:
             retry=RetryPolicy(max_attempts=4),
             client=recommendations_client or client,
         )
+
+    @property
+    def authenticated(self) -> bool:
+        """Whether calls carry a key. Reported, never branched on."""
+        return self._api_key is not None
 
     async def aclose(self) -> None:
         await self.graph.aclose()
@@ -452,6 +468,7 @@ class SemanticScholarProvider:
 
     def snapshot(self) -> dict[str, Any]:
         return {
+            "authenticated": self.authenticated,
             "graph": self.graph.snapshot(),
             "recommendations": self.recommendations.snapshot(),
         }

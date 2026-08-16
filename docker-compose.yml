@@ -19,11 +19,14 @@ services:
     build:
       context: ./services/api
     environment:
-      # No defaults for these three. An unset key must abort startup, and a compose-level
+      # No defaults for these two. An unset key must abort startup, and a compose-level
       # default would quietly supply the empty string that HR-2 exists to reject.
-      SEMANTIC_SCHOLAR_API_KEY: ${SEMANTIC_SCHOLAR_API_KEY}
       OPENALEX_API_KEY: ${OPENALEX_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # Optional (ADR-010a) — empty means "call S2 from the shared unauthenticated pool",
+      # which is a supported configuration here precisely because S2 throttles with a 429
+      # the api raises on. The default keeps compose from warning about an unset variable.
+      SEMANTIC_SCHOLAR_API_KEY: ${SEMANTIC_SCHOLAR_API_KEY:-}
       OPENALEX_MAILTO: ${OPENALEX_MAILTO}
       GROBID_URL: http://grobid:8070
       DATABASE_URL: postgresql+asyncpg://answerthat:answerthat@postgres:5432/answerthat
@@ -50,7 +53,10 @@ services:
       grobid:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      # /api/health, not /health: every router is mounted under the /api prefix,
+      # and the bare path 404s — which reported the container unhealthy while it
+      # was serving requests perfectly well.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -58,11 +64,23 @@ services:
 
   web:
     build:
-      context: ./apps/web
+      # Root context, not ./apps/web: the build needs packages/csl-styles present
+      # at build time for scripts/sync-csl-styles.mjs (see apps/web/Dockerfile).
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # NEXT_PUBLIC_* vars are inlined at build time, so this must be passed as
+        # a build arg too, not just the runtime environment: below.
+        NEXT_PUBLIC_API_URL: http://localhost:8000
     environment:
       # The browser talks to the API directly. Do not proxy the SSE stream through a
       # Next.js route — buffering there makes streaming look broken.
       NEXT_PUBLIC_API_URL: http://localhost:8000
+      # Server Components run *inside this container*, where the URL above is the
+      # container's own loopback and nothing listens on it. They reach the API by its
+      # compose service name instead. Deliberately not NEXT_PUBLIC_: it is read at
+      # runtime on the server and must never be inlined into the client bundle.
+      API_INTERNAL_URL: http://api:8000
     volumes:
       - ./packages/csl-styles:/srv/csl-styles:ro
     ports:

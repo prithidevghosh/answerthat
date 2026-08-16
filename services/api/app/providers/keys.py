@@ -1,19 +1,30 @@
-"""Credential enforcement for provider construction. HR-2 / ADR-010.
+"""Credential enforcement for provider construction. HR-2 / ADR-010 (amended, ADR-010a).
 
 This is the highest-stakes module in `app/providers/`. Read the reasoning before
 changing anything in it.
 
-Under anonymous or unauthenticated limits, neither Semantic Scholar nor OpenAlex fails
-loudly. They return **thin or empty result sets**. The review pipeline cannot tell a
-throttled empty result from a genuinely empty literature, so it would faithfully report
-the first as *"no missing work found"* — a false negative wearing a clean bill of health.
-That is strictly worse than a crash, because it is invisible to the researcher who is
-trusting it.
+The invariant being protected is **not** "every provider has a key". It is: *a throttled
+search must never reach the review pipeline disguised as an empty literature.* A pipeline
+that cannot tell those apart reports a false negative as a clean bill of health, which is
+strictly worse than a crash because it is invisible to the researcher trusting it.
 
-So the design is not "warn and continue". It is: **make the misconfiguration impossible
-to run.** Every provider constructor calls `require_key()`. There is no anonymous path,
-no default route, no degraded mode, and no code path that catches `MissingAPIKeyError`
-in order to keep going.
+Which enforcement that invariant requires depends on how the provider fails:
+
+* **OpenAlex** degrades silently. Anonymous access is 100 credits/day and a list query
+  costs 10, so a review's third search returns a thin result rather than an error. The
+  only safe design there is to make the misconfiguration impossible to run —
+  `require_key()`, no anonymous path, no degraded mode.
+* **Semantic Scholar** degrades *loudly*. Unauthenticated traffic is served from a shared
+  pool and throttling arrives as **HTTP 429**, which `ProviderHTTP` retries with backoff
+  and then raises as `ProviderRateLimited` rather than converting to `[]`. The invariant
+  is already enforced on the response path, so a startup gate adds no safety — it only
+  blocks operators who cannot obtain a key, and since 2024-09 Semantic Scholar approves
+  neither free-domain-email nor third-party-app key requests. Its key is therefore
+  **optional**: `optional_key()`, used for the dedicated 1 RPS allowance when present.
+
+The distinction to keep in mind when adding a provider: ask *how does this API tell us it
+is throttling us?* Silent thinning ⇒ `require_key`. A 4xx we already raise on ⇒
+`optional_key`. Never relax `require_key` for a provider that fails quietly.
 
 If you are here because a test or a demo is inconvenient without a key: the fix is a
 fake key plus a stubbed transport, never a relaxation here.
@@ -23,7 +34,7 @@ from __future__ import annotations
 
 from app.core.contracts import MissingAPIKeyError
 
-__all__ = ["require_key", "require_mailto", "redact"]
+__all__ = ["require_key", "optional_key", "require_mailto", "redact"]
 
 # Where a human actually obtains each credential. A refusal that does not tell the
 # operator how to fix it just converts one dead end into another.
@@ -69,6 +80,22 @@ def require_key(value: str | None, *, env_var: str, provider: str) -> str:
             )
         )
     return key
+
+
+def optional_key(value: str | None) -> str | None:
+    """Return a non-empty API key, or `None` when none was configured.
+
+    For providers whose throttling surfaces as an HTTP error we already raise on, so
+    running unauthenticated cannot produce a silent false negative (ADR-010a). Whitespace
+    is treated as absent, exactly as in `require_key` — `KEY=" "` is a misconfiguration in
+    either regime, and here it means "unauthenticated" rather than a key of one space.
+
+    This is deliberately not a keyword on any constructor. There is no `allow_anonymous`
+    flag to find, because authentication is not a mode the caller selects: it follows from
+    whether a credential exists.
+    """
+    key = (value or "").strip()
+    return key or None
 
 
 def require_mailto(value: str | None, *, env_var: str, provider: str) -> str:

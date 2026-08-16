@@ -238,6 +238,14 @@ class IngestPipeline:
     which renders as a paper whose bibliography we could not verify — indistinguishable,
     to a reader, from a paper whose references are genuinely unresolvable. A caller may
     opt into that (tests do), but it never happens by omission (HR-3 / ADR-010).
+
+    `store_factory` is required on exactly the same terms, and for a failure that is
+    worse. Without it `_persist` invents a version number for a document it never wrote:
+    the ingest reports `complete` at `version: 1`, and every route that reads the version
+    store — `/parse` first among them — then 404s on a paper the user just watched finish
+    parsing. CP-1 says the IR is "persisted with a version number"; a pipeline that can
+    satisfy the second half without the first is a pipeline that can report success for
+    work it did not do. Pass `allow_unpersisted=True` to run in memory (tests do).
     """
 
     def __init__(
@@ -251,6 +259,7 @@ class IngestPipeline:
         segmenter: ReferenceSegmenter | None = None,
         store_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
         allow_unreconciled: bool = False,
+        allow_unpersisted: bool = False,
     ) -> None:
         if arbiter is None and not allow_unreconciled:
             raise ConfigurationError(
@@ -259,6 +268,15 @@ class IngestPipeline:
                 "references rather than as missing configuration. Pass `arbiter=`, or pass "
                 "`allow_unreconciled=True` to state that you meant it."
             )
+        if store_factory is None and not allow_unpersisted:
+            raise ConfigurationError(
+                "IngestPipeline was constructed without a store_factory. The ingest would "
+                "report `complete` with a version number for a document that was never "
+                "written, and every read of that document would then 404 on a paper the "
+                "user just watched finish parsing. Pass `store_factory=`, or pass "
+                "`allow_unpersisted=True` to state that you meant it."
+            )
+        self._allow_unpersisted = allow_unpersisted
         self._grobid = grobid
         self._repair_threshold = repair_threshold
         self._styles_dir = styles_dir
@@ -340,8 +358,9 @@ class IngestPipeline:
 
     async def _persist(self, document: Document) -> int:
         if self._store_factory is None:
-            # Nothing to persist into — the caller is running in-memory (tests). The
-            # version still comes from the document itself rather than being invented.
+            # In-memory by explicit request (`allow_unpersisted=True`) — the constructor
+            # refuses this configuration by omission. The version comes from the document
+            # itself, which is only honest because the caller stated there is no store.
             return document.version
         async with self._store_factory() as store:
             stored = await store.create(document)
@@ -462,6 +481,7 @@ def get_ingest_pipeline(
     store_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
     allow_unreconciled: bool = False,
     allow_unrepaired: bool = False,
+    allow_unpersisted: bool = False,
 ) -> IngestPipeline:
     """Factory for the API layer. One pipeline per process.
 
@@ -470,6 +490,11 @@ def get_ingest_pipeline(
     `allow_unreconciled` / `allow_unrepaired` — a pipeline that quietly resolves nothing
     or quietly repairs nothing is the failure mode ADR-010 exists to prevent, and the
     difference between "configured off" and "forgotten" has to be visible in the code.
+
+    `store_factory` is not defaulted here on purpose. B1 must not import B3's session
+    handling, so the composition root passes it in (`app/api/deps.py:_bind_ingest`) — the
+    same shape as B2's review runner taking B1's document store through a factory. What
+    this function will not do is invent one, or carry on without one.
     """
     global _PIPELINE
     if _PIPELINE is None:
@@ -486,6 +511,7 @@ def get_ingest_pipeline(
             segmenter=segmenter,
             store_factory=store_factory,
             allow_unreconciled=allow_unreconciled,
+            allow_unpersisted=allow_unpersisted,
         )
     return _PIPELINE
 

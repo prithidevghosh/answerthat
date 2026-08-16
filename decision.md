@@ -200,7 +200,7 @@ vocabulary, do not lean on the hatch.**
 
 ## ADR-010 — Fail fast on missing API keys. No anonymous or degraded mode.
 
-**Status:** Accepted
+**Status:** Accepted, **amended by ADR-010a** (Semantic Scholar's key is now optional)
 
 **Context.** OpenAlex moved to mandatory keys and credit-based limits on 13 Feb 2026 — anonymous
 access is 100 credits/day, and a list query costs 10 credits, i.e. roughly ten searches per day.
@@ -220,6 +220,55 @@ downstream, so the only safe design is to make the misconfiguration impossible t
 
 **Consequences.** No zero-config demo. `.env.example` documents both keys and `README.md` links to
 where each is obtained. This is the correct trade.
+
+---
+
+## ADR-010a — `SEMANTIC_SCHOLAR_API_KEY` is optional. ADR-010 was right about the invariant and wrong about S2.
+
+**Status:** Accepted. Amends ADR-010.
+
+**Context.** ADR-010 required both academic keys on one premise: *"under anonymous limits, searches
+don't error — they return thin or empty results."* That premise was asserted for both providers and
+verified for neither. Checked against the APIs, it holds for exactly one of them:
+
+| | Anonymous behaviour | Reaches the pipeline as |
+|---|---|---|
+| **OpenAlex** | 100 credits/day, a list query costs 10 → ~10 searches, then thin results | a plausible empty literature — **silent** |
+| **Semantic Scholar** | shared unauthenticated pool; over it, **HTTP 429** | `ProviderRateLimited`, raised — **loud** |
+
+`http.py` already retries a 429 with backoff, honours `Retry-After`, and then *raises* rather than
+returning `[]` — with a comment citing this very ADR. So for S2 the invariant ADR-010 exists to
+protect was already enforced on the response path, and the startup gate was protecting nothing.
+
+Second fact, discovered at the same time: since **2024-09** Semantic Scholar approves no key
+requests from free-domain email addresses and none for third-party applications. The abort message
+told operators to "request at semanticscholar.org/product/api" — for most of them, a dead end. A
+gate that buys no safety and cannot be satisfied is worse than no gate.
+
+**Decision.** `SEMANTIC_SCHOLAR_API_KEY` is optional. Present, it is sent as `x-api-key` and buys a
+dedicated ~1 RPS; absent, S2 is called anonymously and the header is omitted entirely.
+`SemanticScholarProvider` calls `optional_key()` instead of `require_key()`. `OPENALEX_API_KEY`,
+`OPENALEX_MAILTO` and `OPENAI_API_KEY` are unchanged and still startup-fatal.
+
+**Reasoning.** The invariant was never "every provider has a key" — it was *a throttled search must
+never reach the pipeline disguised as an empty literature*. Requiring a key is one way to enforce
+that, and the weaker one: it acts at startup on a proxy for the risk. Raising on 429 acts at the
+moment the risk actually materialises, and keeps working whether or not a key is set. Where the
+strong enforcement is available we take it; where the provider fails loudly we do not need it.
+
+**Consequences.** The unauthenticated pool is shared globally, so throughput is contended and
+bursty where a keyed 1 RPS is steady. That surfaces as slower reviews and occasional
+`ProviderRateLimited`, both visible — which is the trade ADR-010 would have made had the premise
+been checked. Startup logs which providers are unauthenticated (`unauthenticated_providers()`), and
+`snapshot()` reports `authenticated` per provider: HR-3 applies to configuration too, so the regime
+is stated rather than inferred from latency.
+
+**Tripwire:** if `ProviderRateLimited` from S2 becomes routine rather than occasional, the shared
+pool is no longer adequate and the answer is a key or a lower request rate — **not** a `return []`
+on 429. That branch is the failure ADR-010 was written to prevent, and it stays prohibited.
+
+**The rule this generalises to.** Before requiring a credential, ask *how does this API tell us it
+is throttling us?* Silent thinning ⇒ require it. An error status we already raise on ⇒ optional.
 
 ---
 

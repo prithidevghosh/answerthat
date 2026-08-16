@@ -1,7 +1,7 @@
 """Semantic Scholar adapter, against a mocked transport.
 
 Covers the three things the rest of the system depends on this adapter getting right:
-key enforcement at construction, `source_store` writes carrying real provenance, and
+credential handling at construction, `source_store` writes carrying real provenance, and
 batching instead of looping at ~1 rps.
 """
 
@@ -12,7 +12,7 @@ import inspect
 import httpx
 import pytest
 
-from app.core.contracts import AbstractSource, MissingAPIKeyError
+from app.core.contracts import AbstractSource, ProviderRateLimited
 from app.providers.semantic_scholar import BATCH_LIMIT, SemanticScholarProvider
 
 FAKE_S2_KEY = "test-s2-key"
@@ -36,20 +36,70 @@ def s2(cache, store, fast_limiter, transport_for):
     return build
 
 
-# --------------------------------------------------------------------------- HR-2
+# --------------------------------------------------------------------------- HR-2 / ADR-010a
 
 
 @pytest.mark.parametrize("absent", [None, "", "   "])
-def test_construction_raises_without_a_key(cache, store, absent) -> None:
-    with pytest.raises(MissingAPIKeyError):
-        SemanticScholarProvider(api_key=absent, cache=cache, store=store)
+def test_construction_succeeds_without_a_key(cache, store, absent) -> None:
+    """ADR-010a. S2's key is optional because S2 throttles loudly — see the 429 test
+    below, which is what actually protects the invariant ADR-010 cares about."""
+    provider = SemanticScholarProvider(api_key=absent, cache=cache, store=store)
+    assert provider.authenticated is False
+    assert provider.snapshot()["authenticated"] is False
+
+
+@pytest.fixture
+def anonymous_s2(cache, store, fast_limiter, transport_for):
+    """An S2 provider built with no key, against a mocked transport."""
+
+    def build(routes=None, *, handler=None):
+        transport = transport_for(routes, handler=handler)
+        provider = SemanticScholarProvider(
+            api_key=None,
+            cache=cache,
+            store=store,
+            limiter=fast_limiter,
+            client=httpx.AsyncClient(transport=transport),
+        )
+        return provider, transport
+
+    return build
+
+
+async def test_an_unauthenticated_client_sends_no_key_header_at_all(
+    anonymous_s2, attention_paper
+) -> None:
+    """Not an empty `x-api-key`. An empty header is a different request from no header,
+    and S2 answers it with a 403 rather than serving us from the anonymous pool."""
+    provider, transport = anonymous_s2({"/graph/v1/paper/search": {"data": [attention_paper]}})
+    await provider.search_works("x")
+    assert "x-api-key" not in transport.requests[0].headers
+
+
+async def test_an_unauthenticated_429_raises_rather_than_returning_an_empty_result(
+    anonymous_s2,
+) -> None:
+    """The load-bearing test for ADR-010a.
+
+    Requiring the key was one way to stop a throttled search reaching the pipeline as an
+    empty literature; this is the other, and the one that holds whether or not a key is
+    set. If this ever starts returning `[]`, the amendment's premise is void and the key
+    must go back to being required.
+    """
+    provider, _ = anonymous_s2(
+        {"/graph/v1/paper/search": httpx.Response(429, json={"error": "slow down"})}
+    )
+    with pytest.raises(ProviderRateLimited):
+        await provider.search_works("x")
 
 
 def test_there_is_no_anonymous_constructor_argument() -> None:
     """A regression guard on the shape of the constructor, not just its behaviour.
 
-    ADR-010's failure mode arrives as a helpful-looking kwarg (`allow_anonymous=True`,
-    `require_key=False`) long before it arrives as a deleted check.
+    Authentication follows from whether a credential exists, and must never become a mode
+    the caller selects. ADR-010's real failure arrives as a helpful-looking kwarg
+    (`allow_anonymous=True`, `require_key=False`) applied to a provider that fails
+    *quietly* — so the kwarg stays banned here even though anonymous S2 is now supported.
     """
     params = set(inspect.signature(SemanticScholarProvider.__init__).parameters)
     forbidden = {"allow_anonymous", "anonymous", "require_key", "optional_key", "degraded"}

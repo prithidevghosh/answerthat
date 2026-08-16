@@ -2,13 +2,20 @@
 
 Three things live in this module and nowhere else.
 
-**The required credentials.** `SEMANTIC_SCHOLAR_API_KEY`, `OPENALEX_API_KEY` and
-`OPENAI_API_KEY` are all required; if any is absent or empty, `get_settings()` raises
-`MissingAPIKeyError` and the application does not start. Read ADR-010 before adding a
-fallback. The short version: under anonymous limits these APIs do not error, they return
-*thin or empty results*, which the review pipeline would faithfully report as "no missing
-work found". A false negative dressed as a clean bill of health is worse than a crash,
-because it is invisible.
+**The required credentials.** `OPENALEX_API_KEY` and `OPENAI_API_KEY` are required; if
+either is absent or empty, `get_settings()` raises `MissingAPIKeyError` and the
+application does not start. Read ADR-010 before adding a fallback. The short version:
+under anonymous limits OpenAlex does not error, it returns *thin or empty results*, which
+the review pipeline would faithfully report as "no missing work found". A false negative
+dressed as a clean bill of health is worse than a crash, because it is invisible.
+
+`SEMANTIC_SCHOLAR_API_KEY` is **optional** (ADR-010a). It was required on the same
+reasoning until that reasoning was checked against the API: S2 answers a throttled
+anonymous call with HTTP 429, which `ProviderHTTP` raises as `ProviderRateLimited` rather
+than degrading to `[]`. The false negative ADR-010 guards against cannot occur there, so
+the gate only cost us operators — S2 has issued no new keys to free-domain addresses or
+third-party apps since 2024-09. Set it if you have one and calls get a dedicated 1 RPS
+allowance instead of a shared pool. Do not generalise this to OpenAlex.
 
 **Every model ID (ADR-015).** Models are chosen per role, never globally. No model string
 appears anywhere else in the codebase — if you are about to type `"gpt-5.4"` in a module,
@@ -39,9 +46,19 @@ LLMMode = Literal["live", "record", "replay"]
 # Every required credential, with the place a human actually obtains it. This message is
 # the only thing a misconfigured operator will see, so it has to be complete.
 REQUIRED_KEYS: dict[str, str] = {
-    "SEMANTIC_SCHOLAR_API_KEY": "free — request at https://www.semanticscholar.org/product/api",
     "OPENALEX_API_KEY": "free — register at https://openalex.org (keys became mandatory 2026-02-13)",
     "OPENAI_API_KEY": "https://platform.openai.com/api-keys (ADR-015 — every LLM role uses it)",
+}
+
+# Credentials that improve service but whose absence cannot cause a silent false negative
+# (ADR-010a). Absence is reported at startup, never fatal.
+OPTIONAL_KEYS: dict[str, str] = {
+    "SEMANTIC_SCHOLAR_API_KEY": (
+        "optional — without it S2 calls use the shared unauthenticated pool. Throttling "
+        "there is an HTTP 429 we raise on, not a thin result, so no review can silently "
+        "under-report. Set it for a dedicated ~1 RPS if you have one; S2 has not issued "
+        "new keys to free-domain addresses or third-party apps since 2024-09."
+    ),
 }
 
 
@@ -53,7 +70,9 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # ---------- required credentials (HR-2 / ADR-010 / ADR-015) ----------
+    # ---------- credentials (HR-2 / ADR-010 / ADR-010a / ADR-015) ----------
+    # Optional — see ADR-010a. Empty means "call S2 unauthenticated", which is a supported
+    # configuration, not a degraded one.
     semantic_scholar_api_key: str = ""
     openalex_api_key: str = ""
     openai_api_key: str = ""
@@ -128,9 +147,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _require_credentials(self) -> Settings:
-        """HR-2. Abort startup, naming every missing key and where to get it."""
+        """HR-2. Abort startup, naming every missing key and where to get it.
+
+        `SEMANTIC_SCHOLAR_API_KEY` is deliberately absent from this check (ADR-010a); it
+        is reported by `unauthenticated_providers()`, not enforced.
+        """
         present = {
-            "SEMANTIC_SCHOLAR_API_KEY": self.semantic_scholar_api_key,
             "OPENALEX_API_KEY": self.openalex_api_key,
             "OPENAI_API_KEY": self.openai_api_key,
         }
@@ -162,10 +184,13 @@ def _missing_key_message(missing: list[str]) -> str:
         "Fix it:",
         "  cp .env.example .env      # then set the key(s) above",
         "",
-        "This is deliberate and cannot be bypassed (HR-2 / ADR-010 / ADR-015). There is",
-        "no anonymous mode. Without a key these APIs do not fail loudly — they return",
-        "thin or empty results, which this system would report to a researcher as",
-        '"no missing work found". A silent false negative is worse than this crash.',
+        "This is deliberate and cannot be bypassed (HR-2 / ADR-010 / ADR-015). Without a",
+        "key these APIs do not fail loudly — they return thin or empty results, which this",
+        'system would report to a researcher as "no missing work found". A silent false',
+        "negative is worse than this crash.",
+        "",
+        "SEMANTIC_SCHOLAR_API_KEY is NOT in this list and is not needed to start — S2",
+        "throttles with an HTTP 429 we raise on, so it cannot fail silently (ADR-010a).",
         "",
     ]
     return "\n".join(lines)
@@ -194,3 +219,14 @@ def missing_required_keys(env: dict[str, str] | None = None) -> list[str]:
     """
     source = os.environ if env is None else env
     return [name for name in REQUIRED_KEYS if not (source.get(name) or "").strip()]
+
+
+def unauthenticated_providers(env: dict[str, str] | None = None) -> list[str]:
+    """Names of optional keys absent or empty in `env` (default: os.environ).
+
+    Never fatal. It exists so that startup and `/health` can *say* which providers are
+    running unauthenticated — HR-3 applies to configuration as much as to results, and
+    "we are in the shared S2 pool" should be visible rather than inferred from latency.
+    """
+    source = os.environ if env is None else env
+    return [name for name in OPTIONAL_KEYS if not (source.get(name) or "").strip()]

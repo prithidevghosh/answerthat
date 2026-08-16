@@ -10,6 +10,13 @@ actually broken twice:
 * the factory is **lazy** — it runs per job, not at boot — so `services.review is not
   None` proves only that a callable was stored, not that calling it produces anything.
   A binding can be present, non-None, and dead.
+* twice more, through `_bind()` itself: it calls a factory with `settings` and nothing
+  else, so a factory with a second required collaborator got a `None` default and no
+  complaint. Ingest lost every parsed document that way, and retrieval lost half its
+  candidate strategies. `services.ingest is not None` was true throughout.
+
+The pattern in all four: the binding existed. What it was bound *with* was wrong, and
+nothing at boot had an opinion about that.
 
 So these tests call the factory and inspect what comes out. Construction is pure object
 assembly: no HTTP, no model call, no database connection. The keys are fake and
@@ -29,6 +36,7 @@ def wired(monkeypatch):
     """A real `Services` from the real composition root, singletons reset around it."""
     import app.core.config as config
     import app.core.llm as llm
+    import app.parsing.pipeline as pipeline
     import app.review.claims as claims
     import app.review.composition as composition
     import app.review.retrieval as retrieval
@@ -46,6 +54,11 @@ def wired(monkeypatch):
     def clear() -> None:
         config.reset_settings_cache()
         llm.reset_llm_client()
+        # Cached in a module global like the others, but behind its own name. Reset here
+        # because B1's tests cache an `allow_unpersisted=True` pipeline in that same
+        # global, and inheriting it would make the wiring tests below pass on a pipeline
+        # this composition root never built.
+        pipeline.reset_ingest_pipeline()
         for module in modules:
             module.reset()
 
@@ -120,6 +133,42 @@ def test_start_and_status_are_sync_and_stream_is_an_async_generator(wired):
     assert not inspect.iscoroutinefunction(runner.start)
     assert not inspect.iscoroutinefunction(runner.status)
     assert inspect.isasyncgenfunction(runner.stream)
+
+
+async def test_the_ingest_pipeline_can_actually_persist_what_it_parses(wired):
+    """CP-1: "Document IR persisted with a version number". Both halves, not the second.
+
+    `_persist` used to return `document.version` when it had no store, so an ingest with
+    no store bound reported `complete` at `version: 1` having written nothing — and
+    `/api/documents/{doc_id}/parse` then 404'd on a paper the user had just watched finish
+    parsing. `services.ingest` was bound and non-None the whole time, which is why the
+    assertion here is about the factory rather than about the binding.
+
+    The factory is entered for real, and what comes out has to be B1's actual store. No
+    Postgres is needed: SQLAlchemy opens a session lazily and connects on first query, so
+    this checks the wiring without checking the database.
+    """
+    from app.ir.store import PostgresDocumentStore
+
+    factory = wired.require("ingest")._store_factory
+    assert factory is not None, "an ingest with no store reports success for work it lost"
+
+    async with factory() as store:
+        assert isinstance(store, PostgresDocumentStore)
+
+
+def test_retrieval_is_seeded_with_the_papers_own_bibliography(wired):
+    """CP-3 requires S2 Recommendations "seeded with the paper's own cited works".
+
+    Bound through the generic `_bind()`, retrieval got `document_store=None` — so `prime()`
+    returned an empty context, `has_bibliography` stayed False, and `find_candidates` ran
+    `s2_snippet` and `openalex_search` only. Two of the four strategies never fired.
+
+    Nothing raised. Fewer candidates means fewer findings, and fewer findings read to a
+    reviewer as a cleaner paper — ADR-010's false negative, arrived at through the wiring
+    rather than through a provider.
+    """
+    assert wired.require("retrieval").documents is wired.documents
 
 
 def test_every_collaborator_the_api_needs_is_bound(wired):

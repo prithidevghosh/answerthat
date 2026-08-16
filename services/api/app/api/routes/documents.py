@@ -189,14 +189,26 @@ async def get_style(request: Request, doc_id: str) -> StyleResponse:
     result = await maybe_await(svc.require("style").detect(doc_id))
     if result is None:
         raise HTTPException(status_code=404, detail=f"no style result for document {doc_id!r}")
-    return StyleResponse.model_validate(result)
+    return _style_response(doc_id, result)
 
 
 @router.put("/{doc_id}/style", response_model=StyleResponse)
 async def set_style(request: Request, doc_id: str, payload: StyleSelection) -> StyleResponse:
     svc = services(request)
     result = await maybe_await(svc.require("style").select(doc_id, payload.style_id))
-    return StyleResponse.model_validate(result)
+    return _style_response(doc_id, result)
+
+
+def _style_response(doc_id: str, result: dict) -> StyleResponse:
+    """B1's style payload carries no `doc_id` — it was asked about one and answers about
+    that one — while `StyleResponse` requires it, so validating the payload as-is raised a
+    pydantic `ValidationError` and both style routes returned 500 on every successful
+    detection. The only test of this route covered the 503 for an unbound style service,
+    which is why the success path stayed broken.
+
+    Supplied here rather than added to B1's return: the path parameter *is* the doc_id, and
+    an adapter between another package's shape and F1's is this layer's job."""
+    return StyleResponse.model_validate({"doc_id": doc_id, **result})
 
 
 @router.get("/{doc_id}/export.tex", response_class=PlainTextResponse)

@@ -1,8 +1,12 @@
-"""HR-2 / ADR-010: the app must not start without both keys.
+"""HR-2 / ADR-010 / ADR-010a: the app must not start without the keys that fail quietly.
 
 The point of these tests is not that a validator exists. It is that there is no path —
 no default, no empty string, no whitespace, no "anonymous mode" flag — by which the
-application can come up without real credentials.
+application can come up without the credentials whose absence would be *invisible*.
+
+ADR-010a removed `SEMANTIC_SCHOLAR_API_KEY` from that set, on the evidence that S2
+throttles with a 429 the provider layer raises on. So this module also pins the other
+direction: that an absent S2 key does **not** abort startup, and is reported instead.
 """
 
 from __future__ import annotations
@@ -10,27 +14,28 @@ from __future__ import annotations
 import pytest
 
 from app.core.config import (
+    OPTIONAL_KEYS,
     REQUIRED_KEYS,
     Settings,
     get_settings,
     missing_required_keys,
     reset_settings_cache,
+    unauthenticated_providers,
 )
 from app.core.contracts import MissingAPIKeyError
 
-# ADR-015 made OPENAI_API_KEY startup-fatal on the same terms as the academic APIs.
+# ADR-015 made OPENAI_API_KEY startup-fatal on the same terms as OpenAlex.
 ALL_KEYS = {
-    "SEMANTIC_SCHOLAR_API_KEY": "s2-test-key",
     "OPENALEX_API_KEY": "oa-test-key",
     "OPENAI_API_KEY": "sk-test-key",
 }
-BOTH_KEYS = ALL_KEYS  # kept as an alias; the name predates the third key
+BOTH_KEYS = ALL_KEYS  # kept as an alias; the name predates several revisions
 
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
     """Neutralise the developer's real environment so these tests mean the same in CI."""
-    for name in ALL_KEYS:
+    for name in (*ALL_KEYS, *OPTIONAL_KEYS):
         monkeypatch.delenv(name, raising=False)
     reset_settings_cache()
     yield
@@ -43,8 +48,44 @@ def _settings(**env):
 
 def test_all_keys_present_starts() -> None:
     s = _settings(**{k.lower(): v for k, v in ALL_KEYS.items()})
-    assert s.semantic_scholar_api_key == "s2-test-key"
+    assert s.openalex_api_key == "oa-test-key"
     assert s.openai_api_key == "sk-test-key"
+
+
+# --------------------------------------------------------------------------- ADR-010a
+
+
+@pytest.mark.parametrize("absent", ["", "   ", "\t"])
+def test_an_absent_semantic_scholar_key_does_not_abort_startup(absent: str) -> None:
+    """ADR-010a. The safety property is enforced on the 429 path, not at startup — see
+    `b2/test_semantic_scholar.py::…_429_raises_rather_than_returning_an_empty_result`.
+    Restoring the gate here without deleting that test would be enforcing nothing twice.
+    """
+    s = _settings(**{k.lower(): v for k, v in ALL_KEYS.items()}, semantic_scholar_api_key=absent)
+    assert s.semantic_scholar_api_key == absent
+
+
+def test_the_semantic_scholar_key_is_used_when_it_is_supplied() -> None:
+    s = _settings(**{k.lower(): v for k, v in ALL_KEYS.items()}, semantic_scholar_api_key="s2-key")
+    assert s.semantic_scholar_api_key == "s2-key"
+
+
+def test_an_unauthenticated_provider_is_reported_rather_than_left_to_be_inferred() -> None:
+    """HR-3 applies to configuration too: running in the shared pool is a fact the
+    operator should read in the logs, not deduce from latency."""
+    assert unauthenticated_providers({}) == ["SEMANTIC_SCHOLAR_API_KEY"]
+    assert unauthenticated_providers({"SEMANTIC_SCHOLAR_API_KEY": "  "}) == [
+        "SEMANTIC_SCHOLAR_API_KEY"
+    ]
+    assert unauthenticated_providers({"SEMANTIC_SCHOLAR_API_KEY": "k"}) == []
+
+
+def test_the_optional_key_is_never_startup_fatal() -> None:
+    """A guard on the split itself, so that moving a key between the two dicts is a
+    deliberate edit to this test rather than a silent change in startup behaviour."""
+    assert set(REQUIRED_KEYS) == {"OPENALEX_API_KEY", "OPENAI_API_KEY"}
+    assert set(OPTIONAL_KEYS) == {"SEMANTIC_SCHOLAR_API_KEY"}
+    assert not (set(REQUIRED_KEYS) & set(OPTIONAL_KEYS))
 
 
 @pytest.mark.parametrize("missing", list(REQUIRED_KEYS))
@@ -66,7 +107,7 @@ def test_empty_or_whitespace_key_aborts_startup(key: str, empty_value: str) -> N
         _settings(**env)
 
 
-def test_all_missing_names_all_three() -> None:
+def test_all_missing_names_every_required_key() -> None:
     with pytest.raises(MissingAPIKeyError) as exc:
         _settings()
     message = str(exc.value)
@@ -77,15 +118,25 @@ def test_all_missing_names_all_three() -> None:
 def test_error_message_says_which_key_and_where_to_get_it() -> None:
     """A human reading this message must not have to grep the codebase."""
     env = {k.lower(): v for k, v in ALL_KEYS.items()}
-    env.pop("semantic_scholar_api_key")
+    env.pop("openalex_api_key")
     with pytest.raises(MissingAPIKeyError) as exc:
         _settings(**env)
     message = str(exc.value)
-    assert "SEMANTIC_SCHOLAR_API_KEY" in message
-    assert "semanticscholar.org" in message
+    assert "OPENALEX_API_KEY" in message
+    assert "openalex.org" in message
     assert ".env" in message
     # And it must explain *why*, so nobody "helpfully" adds a fallback later.
     assert "no missing work found" in message
+
+
+def test_the_abort_message_says_the_s2_key_is_not_the_problem() -> None:
+    """The message an operator hits at 2am. Before ADR-010a it sent them to request a key
+    S2 would not issue; now it must say plainly that S2 is not why they are stuck."""
+    with pytest.raises(MissingAPIKeyError) as exc:
+        _settings()
+    message = str(exc.value)
+    assert "SEMANTIC_SCHOLAR_API_KEY is NOT in this list" in message
+    assert "MISSING  SEMANTIC_SCHOLAR_API_KEY" not in message
 
 
 def test_missing_required_keys_reports_without_raising() -> None:

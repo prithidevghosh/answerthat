@@ -9,12 +9,15 @@ by accident.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 
+from app.core.config import reset_settings_cache
 from app.core.contracts import AbstractSource, MissingAPIKeyError, ParseFailure, SourceRecord
 from app.core.errors import ConfigurationError, StyleDetectionFailure
+from app.core.llm import reset_llm_client
 from app.export.pandoc import pandoc_available
 from app.parsing.arbiter import Arbiter, ArbiterProviders
 from app.parsing.pipeline import (
@@ -92,6 +95,10 @@ def _pipeline(grobid: StubGrobid, **kwargs) -> IngestPipeline:
         ambiguity_margin=MARGIN,
         styles_dir=STYLES_DIR,
         arbiter=Arbiter(ArbiterProviders(openalex=ResolveNothing()), accept_threshold=ACCEPT),
+        # These tests exercise parsing, not storage, and run without a Postgres. Stated
+        # rather than defaulted: production wiring that forgets the store is a bug, and
+        # a shared default here is what let it stay one.
+        allow_unpersisted=True,
         **kwargs,
     )
 
@@ -125,40 +132,119 @@ def test_running_unreconciled_must_be_stated_explicitly() -> None:
         repair_threshold=THRESHOLD,
         ambiguity_margin=MARGIN,
         allow_unreconciled=True,
+        allow_unpersisted=True,
     )
     assert pipeline.status("nothing") is None
 
 
+def test_a_pipeline_without_a_store_refuses_to_be_built_by_accident() -> None:
+    """The regression this guard exists for.
+
+    `get_ingest_pipeline(settings)` used to be called from the composition root with no
+    `store_factory`, and the omission was invisible: `_persist` returned the document's
+    own version, so the ingest reported `complete` at `version: 1` while
+    `ir_document_versions` stayed empty. The parse inspector then 404'd — "Could not load
+    parse results" — on a paper the user had just watched finish parsing.
+
+    Reporting success for a write that never happened is the HR-3 failure exactly, so the
+    constructor refuses the configuration rather than trusting every future caller to
+    remember. Running in memory is still allowed; it just has to be said out loud.
+    """
+    with pytest.raises(ConfigurationError, match="without a store_factory"):
+        IngestPipeline(
+            grobid=StubGrobid(),  # type: ignore[arg-type]
+            repair_threshold=THRESHOLD,
+            ambiguity_margin=MARGIN,
+            arbiter=Arbiter(ArbiterProviders(openalex=ResolveNothing()), accept_threshold=ACCEPT),
+        )
+
+
+async def test_a_completed_ingest_has_persisted_the_document_it_reports(tei_xml: str) -> None:
+    """`complete` means the version store has it, not that parsing finished.
+
+    The version reported by `/parse-status` is the version `/parse`, `/documents/{id}` and
+    every later edit will ask the store for. If it comes from anywhere other than the
+    write itself, the two can disagree — and they did.
+    """
+    written: list[tuple[str, int]] = []
+
+    class RecordingStore:
+        async def create(self, document, *, label: str = "ingest"):
+            # The store assigns the version; the pipeline must report what came back
+            # rather than what it hoped for.
+            stored = document.model_copy(update={"version": 7})
+            written.append((stored.doc_id, stored.version))
+            return stored
+
+    @asynccontextmanager
+    async def store_factory():
+        yield RecordingStore()
+
+    pipeline = IngestPipeline(
+        grobid=StubGrobid(tei=tei_xml),  # type: ignore[arg-type]
+        repair_threshold=THRESHOLD,
+        ambiguity_margin=MARGIN,
+        styles_dir=STYLES_DIR,
+        arbiter=Arbiter(ArbiterProviders(openalex=ResolveNothing()), accept_threshold=ACCEPT),
+        store_factory=store_factory,
+    )
+    pipeline.enqueue("doc-persisted", "paper.pdf", b"%PDF-1.4")
+    status = await _drain(pipeline, "doc-persisted")
+
+    assert status["state"] == "complete"
+    assert written == [("doc-persisted", 7)], "a complete ingest must have written the IR"
+    assert status["version"] == 7, "the reported version must be the one the store assigned"
+
+
 def test_the_factory_returns_one_pipeline_per_process() -> None:
     first = get_ingest_pipeline(  # type: ignore[arg-type]
-        FakeSettings(), grobid=StubGrobid(), allow_unreconciled=True, allow_unrepaired=True
+        FakeSettings(),
+        grobid=StubGrobid(),
+        allow_unreconciled=True,
+        allow_unrepaired=True,
+        allow_unpersisted=True,
     )
     second = get_ingest_pipeline(FakeSettings())
     assert first is second
 
 
-def test_the_factory_wires_a_segmenter_unless_told_not_to() -> None:
+def test_the_factory_wires_a_segmenter_unless_told_not_to(monkeypatch) -> None:
     """A repair tier that is absent by omission would look exactly like a repair tier
-    that ran and found nothing to fix (HR-3 / ADR-003)."""
+    that ran and found nothing to fix (HR-3 / ADR-003).
+
+    `OPENAI_API_KEY` is emptied explicitly rather than assumed absent. It used to be
+    assumed, and the assertion below passed on any missing required key at all — so on a
+    developer machine with a populated `.env` it was really testing whichever key that
+    `.env` happened to leave blank. Setting the condition under test makes the test mean
+    the same thing here, in CI, and after ADR-010a shortened the required set.
+    """
     sentinel = object()
     pipeline = get_ingest_pipeline(  # type: ignore[arg-type]
         FakeSettings(),
         grobid=StubGrobid(),
         arbiter=Arbiter(ArbiterProviders(openalex=ResolveNothing()), accept_threshold=ACCEPT),
+        allow_unpersisted=True,
         segmenter=sentinel,  # type: ignore[arg-type]
     )
     assert pipeline._segmenter is sentinel
 
     reset_ingest_pipeline()
-    with pytest.raises(MissingAPIKeyError):
-        # No OPENAI_API_KEY in the test environment, so building the default segmenter
-        # raises rather than yielding a pipeline whose repair tier quietly does nothing.
+    # Empty, not deleted: `Settings` falls back to the repo `.env`, so unsetting the
+    # process variable would just re-read a real key from there.
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    reset_settings_cache()
+    reset_llm_client()
+    with pytest.raises(MissingAPIKeyError, match="OPENAI_API_KEY"):
+        # Building the default segmenter raises rather than yielding a pipeline whose
+        # repair tier quietly does nothing.
         get_ingest_pipeline(  # type: ignore[arg-type]
             FakeSettings(),
             grobid=StubGrobid(),
             arbiter=Arbiter(ArbiterProviders(openalex=ResolveNothing()), accept_threshold=ACCEPT),
         )
     reset_ingest_pipeline()
+    reset_settings_cache()
+    reset_llm_client()
 
 
 # ---------------------------------------------------------------- happy path

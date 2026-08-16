@@ -1,0 +1,12 @@
+# Root build context (apps/web/Dockerfile builds from here). Keep host-built
+# artifacts out of the image — node_modules especially, since native deps
+# (sharp) built on the host for macOS/darwin will not run in the Linux image;
+# `pnpm install` inside the Dockerfile rebuilds them correctly instead.
+**/node_modules
+**/.next
+**/.venv
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/__pycache__
+.git

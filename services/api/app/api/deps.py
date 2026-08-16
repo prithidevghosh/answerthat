@@ -10,14 +10,16 @@ Two rules govern this file, both of them HR-3:
   retrieval that returns `[]`, no null renderer that says "sure, that renders". A missing
   collaborator produces a 503 naming exactly what is missing.
 * **`app/core/config.py` raising is not something we catch.** HR-2 says the application
-  aborts when `SEMANTIC_SCHOLAR_API_KEY`, `OPENALEX_API_KEY` or `OPENAI_API_KEY` is absent.
-  B1's config does the raising; our job is to stay out of its way and let it reach the
-  operator.
+  aborts when `OPENALEX_API_KEY` or `OPENAI_API_KEY` is absent (`SEMANTIC_SCHOLAR_API_KEY`
+  is optional — ADR-010a). B1's config does the raising; our job is to stay out of its way
+  and let it reach the operator.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -187,9 +189,9 @@ def build_services() -> Services:
     _bind_jobs(services, settings)
     _bind_export(services, settings)
 
-    _bind(services, "ingest", "app.parsing.pipeline", ("get_ingest_pipeline",), settings)
+    _bind_ingest(services, settings)
     _bind(services, "style", "app.parsing.style", ("get_style_service",), settings)
-    _bind(services, "retrieval", "app.review.retrieval", ("get_retrieval_service",), settings)
+    _bind_retrieval(services, settings)
     _bind(services, "verifier", "app.review.verify", ("get_verification_service",), settings)
     _bind(services, "claims", "app.review.claims", ("get_claim_extractor",), settings)
     _bind_review(services, settings)
@@ -244,6 +246,38 @@ def _bind_fingerprints(services: Services, settings: Any) -> None:
     )
 
 
+def _bind_retrieval(services: Services, settings: Any) -> None:
+    """B2's candidate retrieval, which needs B1's document store to read the bibliography.
+
+    The same shape of mistake as `_bind_ingest`, found while tracing it, and it was live:
+    `get_retrieval_service(settings, *, document_store=None)` was bound through the generic
+    `_bind()`, which passes only settings. With no store, `prime()` returns an empty
+    `DocumentContext`, `has_bibliography` is False, and `find_candidates` silently runs two
+    of the four strategies — the bibliography-seeded `s2_recommendations` and
+    `openalex_graph` never fire. CP-3 requires S2 Recommendations "seeded with the paper's
+    own cited works", so this is not a tuning question.
+
+    It degrades exactly the way ADR-010 warns about: fewer candidates, so fewer findings,
+    which a reviewer reads as a cleaner paper rather than as a thinner search. Bound
+    after `_bind_documents` for the obvious reason.
+    """
+    try:
+        from app.review.retrieval import get_retrieval_service  # noqa: PLC0415
+    except ImportError as exc:
+        log.warning("retrieval unavailable: %s", exc)
+        return
+
+    if services.documents is None:
+        # Not a fallback to the unseeded service: retrieval that silently searches with
+        # half its strategies is the failure this function exists to prevent. Left
+        # unbound, `require("retrieval")` names it in a 503.
+        log.error("retrieval not bound: it needs B1's document store to seed candidates")
+        return
+
+    services.retrieval = get_retrieval_service(settings, document_store=services.documents)
+    log.info("bound retrieval → app.review.retrieval.get_retrieval_service")
+
+
 def _bind_review(services: Services, settings: Any) -> None:
     """B2's review job runner, which needs B1's document store injected.
 
@@ -264,6 +298,38 @@ def _bind_review(services: Services, settings: Any) -> None:
 
     services.review = get_review_runner(settings, review_runner_factory=pipeline_factory)
     log.info("bound review → app.review.runner.get_review_runner")
+
+
+def _bind_ingest(services: Services, settings: Any) -> None:
+    """B1's ingest pipeline, which needs somewhere to persist the IR it produces.
+
+    Bound here rather than through the generic `_bind()` helper for one reason: `_bind()`
+    calls the factory with `settings` and nothing else, and `get_ingest_pipeline` has a
+    second required collaborator that settings cannot carry. Left unpassed, the pipeline
+    parsed the paper, reported `complete` at `version: 1`, and wrote nothing — so
+    `/api/documents/{doc_id}/parse` 404'd on a document the user had just watched finish.
+    A generic binder is the wrong tool for a factory with an injection point.
+
+    `app/parsing/` must not import `app/core/db`'s session handling, so it takes a factory
+    — the same arrangement as `_bind_review` above, and this is again the only place in
+    the process that knows both halves. One session per ingest, opened when the parse
+    reaches its persist stage and committed by `session_scope` on the way out.
+    """
+    try:
+        from app.core.db import session_scope  # noqa: PLC0415
+        from app.ir.store import PostgresDocumentStore  # noqa: PLC0415
+        from app.parsing.pipeline import get_ingest_pipeline  # noqa: PLC0415
+    except ImportError as exc:
+        log.warning("ingest unavailable: %s", exc)
+        return
+
+    @asynccontextmanager
+    async def store_factory() -> AsyncIterator[Any]:
+        async with session_scope() as session:
+            yield PostgresDocumentStore(session)
+
+    services.ingest = get_ingest_pipeline(settings, store_factory=store_factory)
+    log.info("bound ingest → app.parsing.pipeline.get_ingest_pipeline")
 
 
 def _bind_jobs(services: Services, settings: Any) -> None:
