@@ -54,6 +54,61 @@ class DocumentStoreAdapter:
             return [info.version for info in await self._store_for(session).history(doc_id)]
 
 
+class FingerprintStoreAdapter:
+    """B1's `app.ir.fingerprints` side table → B3's `FingerprintStore` port (ADR-017).
+
+    Two translations. B1's store speaks in `Fingerprint` records and expects the caller to
+    mint the id; B3's port speaks in vectors and gets an id back. And, as with the document
+    store, this holds a *factory*: `PostgresFingerprintStore` takes an `AsyncSession`, and
+    a session is per-unit-of-work rather than per-process.
+
+    The dimension check is here rather than in the transform because this is the only
+    place that knows what the configured embedding width is. It matters more than it looks:
+    cosine similarity between vectors of different lengths is defined as 0.0 by
+    `transform.cosine`, so a stale 256-dimension row would not error — it would surface
+    every anchor in the paragraph as a user decision and look like a bad rewrite (HR-3).
+    """
+
+    def __init__(self, store_factory: Any, session_scope: Any, *, model: str, dimensions: int) -> None:
+        self._store_for = store_factory
+        self._session_scope = session_scope
+        self._model = model
+        self._dimensions = dimensions
+
+    async def put(self, *, vector: list[float], text: str) -> str:
+        from app.ir.fingerprints import Fingerprint, new_fingerprint_id  # noqa: PLC0415
+
+        if len(vector) != self._dimensions:
+            raise ValueError(
+                f"refusing to store a {len(vector)}-dimension fingerprint when the configured "
+                f"embedding width is {self._dimensions}. A mismatched vector scores 0.0 against "
+                f"everything and would surface every anchor as a user decision rather than fail."
+            )
+        record = Fingerprint(
+            fingerprint_id=new_fingerprint_id(),
+            vector=list(vector),
+            text=text,
+            model=self._model,
+            dimensions=self._dimensions,
+        )
+        async with self._session_scope() as session:
+            return await self._store_for(session).put(record)
+
+    async def get_many(self, fingerprint_ids: list[str]) -> dict[str, list[float]]:
+        ids = [fid for fid in dict.fromkeys(fingerprint_ids) if fid]
+        if not ids:
+            return {}
+        async with self._session_scope() as session:
+            found = await self._store_for(session).get_many(ids)
+        return {
+            fid: list(record.vector)
+            for fid, record in found.items()
+            # A row written at a different width is treated as absent, so the caller
+            # re-embeds from the sentence it still has rather than matching against noise.
+            if len(record.vector) == self._dimensions
+        }
+
+
 class SourceReaderAdapter:
     """B2's source store → B3's `SourceReader` port.
 
@@ -150,6 +205,7 @@ def csl_lookup_for(source_reader: Any):
 
 __all__ = [
     "DocumentStoreAdapter",
+    "FingerprintStoreAdapter",
     "LatexExporter",
     "PandocRenderProbe",
     "SourceReaderAdapter",

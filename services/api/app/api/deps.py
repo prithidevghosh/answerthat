@@ -10,8 +10,9 @@ Two rules govern this file, both of them HR-3:
   retrieval that returns `[]`, no null renderer that says "sure, that renders". A missing
   collaborator produces a 503 naming exactly what is missing.
 * **`app/core/config.py` raising is not something we catch.** HR-2 says the application
-  aborts when `SEMANTIC_SCHOLAR_API_KEY` or `OPENALEX_API_KEY` is absent. B1's config does
-  the raising; our job is to stay out of its way and let it reach the operator.
+  aborts when `SEMANTIC_SCHOLAR_API_KEY`, `OPENALEX_API_KEY` or `OPENAI_API_KEY` is absent.
+  B1's config does the raising; our job is to stay out of its way and let it reach the
+  operator.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.agent.executor import OperationExecutor
-from app.agent.kernel import DEFAULT_SIMILARITY_THRESHOLD, InvariantKernel
+from app.agent.kernel import InvariantKernel
 from app.agent.loop import CommandLoop
 from app.agent.planner import Planner
 from app.agent.ports import (
@@ -29,6 +30,7 @@ from app.agent.ports import (
     DocumentStore,
     Embedder,
     Exporter,
+    FingerprintStore,
     RenderProbe,
     RetrievalService,
     ReviewRunner,
@@ -38,6 +40,7 @@ from app.agent.ports import (
     VerificationService,
 )
 from app.agent.store import ChangeSetStore
+from app.agent.thresholds import ReattachmentBand
 from app.agent.versioning import VersionService
 
 log = logging.getLogger("app.api.deps")
@@ -74,9 +77,13 @@ class Services:
     embedder: Embedder | None = None
     text_model: TextModel | None = None
     structured_model: StructuredModel | None = None
+    fingerprints: FingerprintStore | None = None
     jobs: Any = None
     change_sets: ChangeSetStore | None = None
-    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD
+    band: ReattachmentBand | None = None
+    """`REATTACH_ACCEPT` / `REATTACH_FLAG_FLOOR`, read from config at boot (ADR-024). No
+    default here on purpose: a default in this file would be a threshold living outside
+    `app/core/config.py`."""
     settings: Any = None
 
     # -------------------------------------------------------------- accessors
@@ -93,11 +100,10 @@ class Services:
         return value
 
     def kernel(self) -> InvariantKernel:
-        return InvariantKernel(
-            self.require("sources"),
-            self.require("render_probe"),
-            similarity_threshold=self.similarity_threshold,
-        )
+        """Pure, and holding only a read-only source view and a render probe. It takes no
+        threshold: the number an anchor was judged against travels on its
+        `ReattachmentRecord` instead (ADR-024)."""
+        return InvariantKernel(self.require("sources"), self.require("render_probe"))
 
     def executor(self) -> OperationExecutor:
         return OperationExecutor(
@@ -107,7 +113,8 @@ class Services:
             claims=self.require("claims"),
             embedder=self.require("embedder"),
             text_model=self.require("text_model"),
-            similarity_threshold=self.similarity_threshold,
+            fingerprints=self.require("fingerprints"),
+            band=self.require("band"),
         )
 
     def command_loop(self) -> CommandLoop:
@@ -140,6 +147,8 @@ _MISSING_HINTS = {
     "embedder": "no embedding backend was configured",
     "text_model": "no text model was configured",
     "structured_model": "no planner model was configured",
+    "fingerprints": "B1's anchor_fingerprints side table (app/ir/fingerprints.py) is not wired",
+    "band": "the reattachment band was not read from config — see ADR-024",
     "jobs": "the arq job queue is not connected",
 }
 
@@ -156,13 +165,15 @@ def build_services() -> Services:
 
     settings = get_settings()
 
-    services = Services(settings=settings, change_sets=ChangeSetStore())
-    services.similarity_threshold = getattr(
-        settings, "reattachment_threshold", DEFAULT_SIMILARITY_THRESHOLD
+    services = Services(
+        settings=settings,
+        change_sets=ChangeSetStore(),
+        band=ReattachmentBand.from_settings(settings),
     )
 
     _bind_sources(services, settings)
     _bind_documents(services, settings)
+    _bind_fingerprints(services, settings)
     _bind_export(services, settings)
 
     _bind(services, "ingest", "app.parsing.pipeline", ("get_ingest_pipeline",), settings)
@@ -203,6 +214,23 @@ def _bind_documents(services: Services, settings: Any) -> None:
         log.warning("documents unavailable: %s", exc)
         return
     services.documents = DocumentStoreAdapter(PostgresDocumentStore, session_scope)
+
+
+def _bind_fingerprints(services: Services, settings: Any) -> None:
+    """B1's `anchor_fingerprints` side table (ADR-017), behind B3's port."""
+    try:
+        from app.api.adapters import FingerprintStoreAdapter
+        from app.core.db import session_scope
+        from app.ir.fingerprints import PostgresFingerprintStore
+    except ImportError as exc:
+        log.warning("fingerprints unavailable: %s", exc)
+        return
+    services.fingerprints = FingerprintStoreAdapter(
+        PostgresFingerprintStore,
+        session_scope,
+        model=settings.embedding_model,
+        dimensions=settings.embedding_dimensions,
+    )
 
 
 def _bind_export(services: Services, settings: Any) -> None:
