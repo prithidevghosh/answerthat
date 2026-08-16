@@ -265,11 +265,11 @@ favour of the more specific one: the table stays `anchor_fingerprints`, and
 rather than silently reinterpreted; if you want the prefix everywhere, it needs an ADR and a
 `make db-reset`, not a rename in passing. · 2026-08-16
 
-[OPEN] B1 → B2 · `tests/unit/b2/test_cascade.py` fails in the full-suite run, passes alone ·
-`test_a_candidate_with_no_embeddable_text_is_unjudged_not_rejected` asserts `"src_0"` and gets
-`"src_11"` when the whole suite runs — a module-level id counter shared with another b2 test file
-and not reset. `uv run pytest tests/unit/b2 -q` → 193 passed; `uv run pytest tests/unit -q` → that
-one fails. Not B1's file to fix, and worth fixing before CI treats it as flake. · 2026-08-16
+[RESOLVED] B1 → B2 · `tests/unit/b2/test_cascade.py` failed in the full-suite run, passed alone ·
+`test_a_candidate_with_no_embeddable_text_is_unjudged_not_rejected` asserted `"src_0"` and got
+`"src_11"` under the whole suite — a module-level id counter shared across b2 test files and not
+reset. Fixed by B2 in the same session; `uv run pytest tests/unit -q` → `594 passed`. Recorded
+because the failure mode (a test that passes per-directory and fails in CI) will recur. · 2026-08-16
 
 ---
 
